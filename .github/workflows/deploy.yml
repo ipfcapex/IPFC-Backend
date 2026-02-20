@@ -13,29 +13,42 @@
 #       - name: Checkout repository
 #         uses: actions/checkout@v4
 
-#       - name: Setup SSH
-#         run: |
-#           mkdir -p ~/.ssh
-#           echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_ed25519
-#           chmod 600 ~/.ssh/id_ed25519
-#           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
-
-#       - name: Deploy to EC2
-#         run: |
-#           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-#             cd ~/apex-shoes-api
+#       - name: Executing remote ssh commands using ssh-action
+#         uses: appleboy/ssh-action@v1.0.3
+#         with:
+#           host: ${{ secrets.EC2_HOST }}
+#           username: ${{ secrets.EC2_USER }}
+#           key: ${{ secrets.EC2_SSH_KEY }}
+#           port: 22
+#           script: |
+#             # 1. Navigate to the folder
+#             cd ~/apex-shoes-api || exit
+            
+#             # 2. Pull the latest code
 #             git pull origin apex-shoes/api
-#             npm install
-#             pm2 restart apex-shoes-api || pm2 start src/index.js --name apex-shoes-api
+            
+#             # 3. Install dependencies
+#             npm install --production
+            
+#             # 4. Restart or Start the app using PM2
+#             # This checks if the process exists; if not, it starts a new one
+#             pm2 describe apex-shoes-api > /dev/null 2>&1
+#             if [ $? -ne 0 ]; then
+#               pm2 start src/index.js --name apex-shoes-api
+#             else
+#               pm2 restart apex-shoes-api
+#             fi
+            
+#             # 5. Save PM2 state so it restarts on server reboot
 #             pm2 save
-#           EOF
+
 
 name: Deploy Apex Shoes API to EC2
 
 on:
   push:
     branches:
-      - apex-shoes/api
+      - main
 
 jobs:
   deploy:
@@ -49,21 +62,20 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
+          username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
           script: |
-            # 1. Navigate to the folder
-            cd ~/apex-shoes-api || exit
+            # 1. Navigate to the server folder
+            cd ~/apex-shoes-backend || exit
             
-            # 2. Pull the latest code
-            git pull origin apex-shoes/api
+            # 2. Pull the latest code from the main branch
+            git pull origin main
             
             # 3. Install dependencies
-            npm install --production
+            npm install
             
             # 4. Restart or Start the app using PM2
-            # This checks if the process exists; if not, it starts a new one
             pm2 describe apex-shoes-api > /dev/null 2>&1
             if [ $? -ne 0 ]; then
               pm2 start src/index.js --name apex-shoes-api
