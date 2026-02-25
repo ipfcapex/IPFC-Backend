@@ -10,6 +10,7 @@
   "license": "ISC",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.940.0",
+    "@aws-sdk/client-ses": "^3.997.0",
     "@aws-sdk/client-sns": "^3.948.0",
     "aws-sdk": "^2.1693.0",
     "axios": "^1.13.2",

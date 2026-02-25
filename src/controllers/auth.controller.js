@@ -64,10 +64,10 @@ const LoginUser = async (req, res) => {
 
 const loginWithOtp = async (req, res, next) => {
   try {
-    const { phone, otp, latitude, longitude } = req.body;
+    const { email, otp, latitude, longitude } = req.body;
 
     // Call the service with lat/lon
-    const result = await authService.loginWithOtp(req, phone, otp, latitude, longitude);
+    const result = await authService.loginWithOtp(req, email, otp, latitude, longitude);
 
     console.log("session...", req.session);
 
@@ -105,8 +105,8 @@ const loginWithOtp = async (req, res, next) => {
 // resedn otp
 const resendopt = async (req, res, next) => {
   try {
-    const { phone } = req.body;
-    const result = await authService.reSendOpt(phone);
+    const { email } = req.body;
+    const result = await authService.reSendOpt(email);
     res.status(200).json({
       success: true,
       message: "OTP Resent Successfully...",
@@ -231,8 +231,8 @@ const deleteUser = async (req, res) => {
 
 const sendOtps = async (req, res) => {
   try {
-    const { phone } = req.body;
-    const result = await authService.sendOtp(phone);
+    const { email } = req.body;
+    const result = await authService.sendOtp(email);
     return res.status(result.success ? 200 : 400).json(result);
   } catch (error) {
     return res.status(500).json({ success: false, message: "Server error", error: error.message });
@@ -241,8 +241,8 @@ const sendOtps = async (req, res) => {
 
 const verifyOtps = async (req, res) => {
   try {
-    const { phone, otp } = req.body;
-    const result = await authService.verifyOtp(phone, otp);
+    const { email, otp } = req.body;
+    const result = await authService.verifyOtp(email, otp);
     return res.status(result.success ? 200 : 400).json(result);
   } catch (error) {
     return res.status(500).json({ success: false, message: "Server error", error: error.message });
@@ -251,8 +251,8 @@ const verifyOtps = async (req, res) => {
 
 const changePasswordss = async (req, res) => {
   try {
-    const { phone, newPassword, confirmPassword } = req.body;
-    const result = await authService.changePasswordS(phone, newPassword, confirmPassword);
+    const { email, newPassword, confirmPassword } = req.body;
+    const result = await authService.changePasswordS(email, newPassword, confirmPassword);
     return res.status(result.success ? 200 : 400).json(result);
   } catch (error) {
     return res.status(500).json({ success: false, message: "Server error", error: error.message });

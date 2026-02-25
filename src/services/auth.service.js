@@ -10,7 +10,7 @@ const path = require("path");
 const cloudinary = require("../utils/cloudinary")
 const { uploadToS3 } = require("../middleware/aws.Middleware"); // your S3 helper
 require('dotenv').config();
-const { sns } = require("../utils/awsSNS");
+const { sns, sendEmailOTP, resendEmailOTP, sendEmailOTPforpasswordchange } = require("../utils/awsOTPservice");
 const {generateOtp, hashOtp, verifyHash} = require("../helper/opt.helper");
 const OTP = require("../models/otp.model");
 const { PublishCommand  } = require("@aws-sdk/client-sns");
@@ -68,113 +68,36 @@ const LoginUser = async (email, password,latitude, longitude) => {
   if (!isPasswordMatch) throw new Error("Invalid password");
 
   // const otp = generateOtp(); // 6-digit OTP
-   const otp = '123456';
+   const otp = generateOtp(); // 6-digit OTP
   const { otpHash, salt } = hashOtp(otp);
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
 
   await OTP.create({
     userId: user._id,
-    phone: user.phone,
+    email: user.email,
     otpHash,   // must match schema
     salt,
     expiresAt,
     isVerified: false,
   });
 
-
-  const params = {
-    Message: `Your OTP for Apex Login is: ${otp}`,
-    PhoneNumber: `+91${user.phone}`, // Include country code
-    MessageAttributes: {
-      "AWS.SNS.SMS.SMSType": { DataType: "String", StringValue: "Transactional" }
-    },
-  };
-
   try {
-    const response = await sns.send(new PublishCommand(params));
-    console.log("SNS Response:", response);
-    console.log(`🧪 OTP for dev: ${otp} (User: ${user.phone})`);
+    await sendEmailOTP(user.email, otp); // ✅ now actually a function
+
+    console.log(`🧪 OTP for dev: ${otp} (User: ${user.email})`);
+    // ❌ remove: console.log("SNS Response:", response); — response doesn't exist
 
     return {
       message: "OTP sent successfully",
-      phone: user.phone,
+      email: user.email,
       latitude,
-      longitude
+      longitude,
     };
   } catch (error) {
-    console.error("Error sending OTP via SNS:", error);
-    throw new Error("Failed to send OTP. Check SNS configuration and sandbox verification.");
+    console.error("❌ SES Error:", error.message);
+    throw new Error(`Failed to send OTP: ${error.message}`); // expose real error
   }
 };
-
-// Login with OTP
-// const loginWithOtp = async (req, phone, otp) => {
-//   const user = await User.findOne({ phone }).populate("warehouses", "name location"); 
-//   if (!user) throw new Error("User not found");
-
-//   const otpRecord = await OTP.findOne({ phone, isVerified: false }).sort({ createdAt: -1 });
-//   if (!otpRecord) throw new Error("No OTP request found for this number");
-
-//   if (new Date() > otpRecord.expiresAt) {
-//     throw new Error("OTP expired");
-//   }
-
-//   // ✅ Pass the user-provided OTP, not the whole object
-//   const isOtpValid = verifyHash(otp, otpRecord.salt, otpRecord.otpHash);
-//   if (!isOtpValid) {
-//     throw new Error("Invalid OTP");
-//   }
-
-//   otpRecord.isVerified = true;
-//   otpRecord.deleteAt = new Date(Date.now() + 60 * 1000); // auto delete after 1 min
-//   await otpRecord.save();
-
-//   const accessToken = jwt.sign(
-//     { id: user._id, phone: user.phone, email: user.email, role: user.role },
-//     process.env.JWT_SECRET,
-//     { expiresIn: process.env.JWT_EXPIRES_IN || "2h" } 
-//   );
-
-//   const refreshToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
-//     expiresIn: "2h",
-//   });
-
-//   const newToken = new Token({
-//     token: refreshToken,
-//     user: user._id,
-//     type: tokenTypes.REFRESH,
-//     expires: new Date(Date.now() + 2 * 60 * 60 * 1000), 
-//   });
-
-//   await newToken.save();
-
-//   req.session.user = {
-//     id: user._id,
-//     phone: user.phone,
-//     email: user.email,
-//     role: user.role,
-//     warehouses: user.warehouses
-//   };
-
-//   sendNotification("loginSuccess", {
-//     message: `Login Success`,
-//     data: user,
-//   });
-
-//   return {
-//     accessToken,
-//     refreshToken,
-//     user: {
-//       id: user._id,
-//       name: user.name,
-//       phone: user.phone,
-//       email: user.email,
-//       role: user.role,
-//       warehouses: user.warehouses,
-//       profileImage: user.profileImage || null,
-//     },
-//   };
-// };
 
 /**
  * Convert decimal degrees to DMS format
@@ -201,21 +124,21 @@ const convertToDMS = (decimal, type) => {
   return `${Math.abs(deg)}°${min}'${sec}" ${direction}`;
 };
 
-const loginWithOtp = async (req, phone, otp, latitude, longitude) => {
+const loginWithOtp = async (req, email, otp, latitude, longitude) => {
   // 1️⃣ Validate user exists
-  const user = await User.findOne({ phone }).populate("warehouses", "name location");
+  const user = await User.findOne({ email }).populate("warehouses", "name location");
   if (!user) throw new Error("User not found");
 
   // 2️⃣ Validate OTP
-  const otpRecord = await OTP.findOne({ phone, isVerified: false }).sort({ createdAt: -1 });
-  if (!otpRecord) throw new Error("No OTP request found for this number");
+  const otpRecord = await OTP.findOne({ email, isVerified: false }).sort({ createdAt: -1 });
+  if (!otpRecord) throw new Error("No OTP request found for this email");
   if (new Date() > otpRecord.expiresAt) throw new Error("OTP expired");
 
   const isOtpValid = verifyHash(otp, otpRecord.salt, otpRecord.otpHash);
   if (!isOtpValid) throw new Error("Invalid OTP");
 
   otpRecord.isVerified = true;
-  otpRecord.deletedAt = new Date(Date.now() + 60 * 1000);
+  otpRecord.deleteAt = new Date(Date.now() + 60 * 1000);
   await otpRecord.save();
 
   // 3️⃣ Parse latitude/longitude if string
@@ -283,45 +206,34 @@ const loginWithOtp = async (req, phone, otp, latitude, longitude) => {
   };
 };
 
-
 // Resend Opt 
-const reSendOpt = async (phone) => {
-  const user = await User.findOne({ phone });
+const reSendOpt = async (email) => {
+  const user = await User.findOne({ email });
   if (!user) throw new Error("User not found");
 
-  const lastopt = await OTP.findOne({ phone }).sort({ createdAt: -1 });
+  const lastopt = await OTP.findOne({ email }).sort({ createdAt: -1 });
   if (lastopt && new Date() - lastopt.createdAt < 60000) {
     throw new Error("Please wait form minute before requesting a new OTP");
   }
 
   // const newopt = generateOtp();
-   const otp = '123456';
-
-  const { otpHash, salt } = hashOtp(newopt);
+  const otp = generateOtp();
+  const { otpHash, salt } = hashOtp(otp);
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
 
   await OTP.create({
     userId: user._id,
-    phone,
+    email,
     otpHash,
     salt,
     expiresAt,
     isVerified: false,
   });
 
-  const params = {
-    Message: `Your New OTP for Apex Login is: ${newopt}`,
-    PhoneNumber: `+91${phone}`, // Include country code
-    MessageAttributes: {
-      "AWS.SNS.SMS.SMSType": { DataType: "String", StringValue: "Transactional" }
-    },
-  };
-
   try {
-    const response = await sns.send(new PublishCommand(params));
-    console.log("SNS Response:", response);
-    console.log(`🧪 Resent OTP for dev: ${newopt} (User: ${phone})`)
-    return { message: "OTP resent successfully", phone };
+    await resendEmailOTP(user.email, otp); // ✅ now actually a function
+    console.log(`🧪 OTP for dev: ${otp} (User: ${user.email})`);
+    return { message: "OTP resent successfully", email };
   } catch (error) {
     console.error("Error resending OTP via SNS:", error);
     throw new Error("Failed to resend OTP. Check SNS configuration and sandbox verification.");
@@ -404,6 +316,7 @@ const reSendOpt = async (phone) => {
 
 
 // Logout For all Role type
+
 const Logout = async (req, refreshToken) => {
   const refreshTokenDoc = await Token.findOne({
     token: refreshToken,
@@ -636,45 +549,32 @@ const deleteUser = async (id) => {
 };
 
 // Send OTP for Forget Password
-const sendOtp = async (phone) => {
+const sendOtp = async (email) => {
   // 1️⃣ Check if user exists
-  const user = await User.findOne({ phone });
-  if (!user) return { success: false, message: "Number is not registered" };
+  const user = await User.findOne({ email });
+  if (!user) return { success: false, message: "Email is not registered" };
 
   // 2️⃣ Generate OTP
   // const otp = generateOtp(); // 6-digit random OTP
-  const otp = '123456';
+  const otp = generateOtp(); // 6-digit random OTP
   const { otpHash, salt } = hashOtp(otp);
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 min expiry
 
   // 3️⃣ Save OTP in DB
   await OTP.create({
     userId: user._id,
-    phone,
+    email,
     otpHash,
     salt,
     expiresAt,
     isVerified: false,
   });
 
-  // 4️⃣ Send OTP via SNS
-  const params = {
-    Message: `Your Password Reset code is: ${otp}`,
-    PhoneNumber: `+91${phone}`, // include country code
-    MessageAttributes: {
-      "AWS.SNS.SMS.SMSType": {
-        DataType: "String",
-        StringValue: "Transactional", // fast delivery
-      },
-    },
-  };
-
   try {
-    const result = await sns.send(new PublishCommand(params));
-    console.log(`SNS OTP sent: ${otp} to ${phone}`);
-    console.log("SNS Response:", result);
+    await sendEmailOTPforpasswordchange(user.email, otp); // ✅ now actually a function
+    console.log(`Email OTP sent: ${otp} to ${user.email}`);
 
-    return { success: true, message: "OTP sent successfully", phone };
+    return { success: true, message: "OTP sent successfully", email };
   } catch (err) {
     console.error("Error sending OTP via SNS:", err);
     return { success: false, message: "Failed to send OTP", error: err.message };
@@ -682,10 +582,10 @@ const sendOtp = async (phone) => {
 };
 
 // Verify OTP for Forget Password
-const verifyOtp = async (phone, otp) => {
+const verifyOtp = async (email, otp) => {
   try{
-    const otpRecord = await OTP.findOne({ phone, isVerified: false }).sort({ createdAt: -1 });
-   if (!otpRecord) throw new Error("No OTP request found for this number");
+    const otpRecord = await OTP.findOne({ email, isVerified: false }).sort({ createdAt: -1 });
+   if (!otpRecord) throw new Error("No OTP request found for this email");
 
    if (new Date() > otpRecord.expiresAt) {
     throw new Error("OTP expired");
@@ -708,7 +608,7 @@ const verifyOtp = async (phone, otp) => {
 };
 
 // Change Password
-const changePasswordS = async (phone, newPassword, confirmPassword) => {
+const changePasswordS = async (email, newPassword, confirmPassword) => {
   // Skip OTP verification for testing
   // const record = otpStore[phone];
   // if (!record || !record.verified) return { success: false, message: "OTP not verified" };
@@ -716,8 +616,8 @@ const changePasswordS = async (phone, newPassword, confirmPassword) => {
   if (newPassword !== confirmPassword) 
     return { success: false, message: "Passwords do not match" };
 
-  const user = await User.findOne({ phone });
-  if (!user) return { success: false, message: "Number is not registered" };
+  const user = await User.findOne({ email });
+  if (!user) return { success: false, message: "Email is not registered" };
 
   const hashedPassword = newPassword;
   user.password = hashedPassword;
