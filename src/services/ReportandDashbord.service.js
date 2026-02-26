@@ -939,213 +939,6 @@ exports.lowstockAlert = async (page = 1, limit = 5) => {
 
 // exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter = {} } = {}) => {
 //   const searchList = Array.isArray(name) ? name : [name].filter(Boolean);
-//   let matchBase = {
-//     inventoryManagerApproval: "APPROVED",
-//     deliveryStatus: "DELIVERED",
-//   };
-
-//   const pipelines = [];
-//   const financialYear = filter?.year || null;
-//   const [startYear, endYear] = financialYear ? financialYear.split("-").map(Number) : [null, null];
-
-//   const quarterToMonths = {
-//     1: [4, 5, 6],
-//     2: [7, 8, 9],
-//     3: [10, 11, 12],
-//     4: [1, 2, 3],
-//   };
-
-//   let monthList = [];
-//   let quarterList = [];
-
-//   if (filter?.month) {
-//     monthList = Array.isArray(filter.month) ? filter.month.map(Number) : [Number(filter.month)];
-//   } else if (filter?.quarter) {
-//     quarterList = Array.isArray(filter.quarter) ? filter.quarter.map(Number) : [Number(filter.quarter)];
-//   } else if (financialYear) {
-//     monthList = [1,2,3,4,5,6,7,8,9,10,11,12]; // FY months
-//   } else {
-//     // No year, month, or quarter → full data
-//     monthList = [null];  // null will indicate no date filter
-//   }
-
-//   // =========================
-//   // MONTHLY / ALL DATA aggregation
-//   // =========================
-//   for (const fyMonth of monthList) {
-//     let fromDate = null, toDate = null;
-
-//     if (fyMonth) {
-//       let calendarMonth, year;
-//       if (fyMonth <= 9) {
-//         calendarMonth = fyMonth + 3;
-//         year = startYear;
-//       } else {
-//         calendarMonth = fyMonth - 9;
-//         year = endYear;
-//       }
-//       fromDate = new Date(year, calendarMonth - 1, 1);
-//       toDate = new Date(year, calendarMonth, 0, 23, 59, 59, 999);
-//     }
-
-//     let match = { ...matchBase };
-//     if (fromDate && toDate) match.createdAt = { $gte: fromDate, $lte: toDate };
-
-//     const searchField = type === "category" ? "items.categoryCode" : "items.article";
-//     if (searchList.length > 0) match[searchField] = { $in: searchList };
-
-//     pipelines.push([
-//       { $match: match },
-//       { $unwind: "$items" },
-//       ...(searchList.length > 0 ? [{ $match: { [searchField]: { $in: searchList } } }] : []),
-//       {
-//         $facet: {
-//           articleSummary: [
-//             {
-//               $group: {
-//                 _id: type === "category" ? "$items.categoryCode" : "$items.article",
-//                 totalQuantitySold: { $sum: "$items.quantity" },
-//                 totalOrders: { $sum: 1 },
-//               },
-//             },
-//             { $sort: { totalQuantitySold: -1 } },
-//             { $addFields: { ...(financialYear && { financialYear }), ...(fyMonth && { month: fyMonth }) } },
-//           ],
-//           colorSizeSummary: [
-//             {
-//               $group: {
-//                 _id: {
-//                   key: searchField === "items.article" ? "$items.article" : "$items.categoryCode",
-//                   color: "$items.color",
-//                   size: "$items.size",
-//                 },
-//                 totalQuantitySold: { $sum: "$items.quantity" },
-//               },
-//             },
-//             {
-//               $project: {
-//                 _id: 0,
-//                 articleOrCategory: "$_id.key",
-//                 color: "$_id.color",
-//                 size: "$_id.size",
-//                 totalQuantitySold: 1,
-//                 ...(financialYear && { financialYear }),
-//                 ...(fyMonth && { month: fyMonth }),
-//               },
-//             },
-//             { $sort: { articleOrCategory: 1, color: 1, size: 1 } },
-//           ],
-//           cumulativeTotalByArticle: [
-//             {
-//               $group: {
-//                 _id: type === "category" ? "$items.categoryCode" : "$items.article",
-//                 grandTotalQuantity: { $sum: "$items.quantity" },
-//                 totalOrderLines: { $sum: 1 },
-//               },
-//             },
-//             {
-//               $project: {
-//                 _id: 0,
-//                 articleOrCategory: "$_id",
-//                 grandTotalQuantity: 1,
-//                 totalOrderLines: 1,
-//                 ...(financialYear && { financialYear }),
-//                 ...(fyMonth && { month: fyMonth }),
-//               },
-//             },
-//           ],
-//         },
-//       },
-//     ]);
-//   }
-
-//   // =========================
-//   // QUARTERLY aggregation (if quarter filter exists)
-//   // =========================
-//   for (const q of quarterList) {
-//     const months = quarterToMonths[q];
-//     const fromMonth = months[0];
-//     const toMonth = months[months.length - 1];
-//     const fromYear = fromMonth >= 4 ? startYear : endYear;
-//     const toYear = toMonth >= 4 ? startYear : endYear;
-
-//     const fromDate = new Date(fromYear, fromMonth - 1, 1);
-//     const toDate = new Date(toYear, toMonth, 0, 23, 59, 59, 999);
-
-//     let match = { ...matchBase, createdAt: { $gte: fromDate, $lte: toDate } };
-//     const searchField = type === "category" ? "items.categoryCode" : "items.article";
-//     if (searchList.length > 0) match[searchField] = { $in: searchList };
-
-//     pipelines.push([
-//       { $match: match },
-//       { $unwind: "$items" },
-//       ...(searchList.length > 0 ? [{ $match: { [searchField]: { $in: searchList } } }] : []),
-//       {
-//         $facet: {
-//           articleSummary: [
-//             {
-//               $group: {
-//                 _id: type === "category" ? "$items.categoryCode" : "$items.article",
-//                 totalQuantitySold: { $sum: "$items.quantity" },
-//                 totalOrders: { $sum: 1 },
-//               },
-//             },
-//             { $sort: { totalQuantitySold: -1 } },
-//             { $addFields: { ...(financialYear && { financialYear }), quarter: q } },
-//           ],
-//           colorSizeSummary: [
-//             {
-//               $group: {
-//                 _id: {
-//                   key: searchField === "items.article" ? "$items.article" : "$items.categoryCode",
-//                   color: "$items.color",
-//                   size: "$items.size",
-//                 },
-//                 totalQuantitySold: { $sum: "$items.quantity" },
-//               },
-//             },
-//             {
-//               $project: {
-//                 _id: 0,
-//                 articleOrCategory: "$_id.key",
-//                 color: "$_id.color",
-//                 size: "$_id.size",
-//                 totalQuantitySold: 1,
-//                 ...(financialYear && { financialYear }),
-//                 quarter: q,
-//               },
-//             },
-//             { $sort: { articleOrCategory: 1, color: 1, size: 1 } },
-//           ],
-//           cumulativeTotalByArticle: [
-//             {
-//               $group: {
-//                 _id: type === "category" ? "$items.categoryCode" : "$items.article",
-//                 grandTotalQuantity: { $sum: "$items.quantity" },
-//                 totalOrderLines: { $sum: 1 },
-//               },
-//             },
-//             {
-//               $project: {
-//                 _id: 0,
-//                 articleOrCategory: "$_id",
-//                 grandTotalQuantity: 1,
-//                 totalOrderLines: 1,
-//                 ...(financialYear && { financialYear }),
-//                 quarter: q,
-//               },
-//             },
-//           ],
-//         },
-//       },
-//     ]);
-//   }
-
-//   return pipelines;
-// };
-
-// exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter = {} } = {}) => {
-//   const searchList = Array.isArray(name) ? name : [name].filter(Boolean);
 
 //   let matchBase = {
 //     inventoryManagerApproval: "APPROVED",
@@ -1169,284 +962,121 @@ exports.lowstockAlert = async (page = 1, limit = 5) => {
 //   let quarterList = [];
 
 //   if (filter?.month) {
-//     monthList = Array.isArray(filter.month)
-//       ? filter.month.map(Number)
-//       : [Number(filter.month)];
+//     monthList = Array.isArray(filter.month) ? filter.month.map(Number) : [Number(filter.month)];
 //   } else if (filter?.quarter) {
-//     quarterList = Array.isArray(filter.quarter)
-//       ? filter.quarter.map(Number)
-//       : [Number(filter.quarter)];
+//     quarterList = Array.isArray(filter.quarter) ? filter.quarter.map(Number) : [Number(filter.quarter)];
 //   } else if (financialYear) {
-//     monthList = [1,2,3,4,5,6,7,8,9,10,11,12];
+//     monthList = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 //   } else {
 //     monthList = [null];
 //   }
 
-//   const filterField =
-//     type === "category" ? "items.categoryCode" : "items.article";
-
+//   const filterField = type === "category" ? "items.categoryCode" : "items.article";
 //   const reportGroupField = "$items.article";
 
-//   // =========================
-//   // MONTHLY / ALL DATA
-//   // =========================
+//   // Reusable function to build the pipeline stages for each period
+//   const buildPipeline = (match, fyMonth = null, q = null) => [
+//     { $match: match },
+//     { $unwind: "$items" },
+//     ...(searchList.length > 0 ? [{ $match: { [filterField]: { $in: searchList } } }] : []),
+//     {
+//       $facet: {
+//         articleSummary: [
+//           {
+//             $group: {
+//               _id: reportGroupField,
+//               totalQuantitySold: { $sum: "$items.quantity" },
+//               totalOrders: { $sum: 1 },
+//             },
+//           },
+//           { $sort: { totalQuantitySold: -1 } },
+//           {
+//             $addFields: {
+//               ...(financialYear && { financialYear }),
+//               ...(fyMonth && { month: fyMonth }),
+//               ...(q && { quarter: q }),
+//             },
+//           },
+//         ],
+//         colorSizeSummary: [
+//           {
+//             $group: {
+//               _id: { article: "$items.article", color: "$items.color", size: "$items.size" },
+//               totalQuantitySold: { $sum: "$items.quantity" },
+//             },
+//           },
+//           {
+//             $project: {
+//               _id: 0,
+//               articleOrCategory: "$_id.article",
+//               color: "$_id.color",
+//               size: "$_id.size",
+//               totalQuantitySold: 1,
+//               ...(financialYear && { financialYear }),
+//             },
+//           },
+//           { $sort: { articleOrCategory: 1, color: 1, size: 1 } },
+//         ],
+//         cumulativeTotalByArticle: [
+//           {
+//             $group: {
+//               _id: type === "category" ? "$items.categoryCode" : reportGroupField,
+//               grandTotalQuantity: { $sum: "$items.quantity" },
+//               categoryCode: { $first: "$items.categoryCode" },
+//               totalOrderLines: { $sum: 1 },
+//             },
+//           },
+//           {
+//             $project: {
+//               _id: 0,
+//               categoryCode: 1,
+//               articleOrCategory: "$_id",
+//               grandTotalQuantity: 1,
+//               totalOrderLines: 1,
+//               ...(financialYear && { financialYear }),
+//             },
+//           },
+//         ],
+//         TallyTotal: [
+//           { $group: { _id: null, total: { $sum: "$items.quantity" } } },
+//           { $project: { _id: 0, totalSales: "$total" } }
+//         ]
+//       },
+//     },
+//   ];
+
+//   // Logic for Monthly/Yearly iterations
 //   for (const fyMonth of monthList) {
-
-//     let fromDate = null;
-//     let toDate = null;
-
+//     let fromDate = null, toDate = null;
 //     if (fyMonth && financialYear) {
-//       let calendarMonth, year;
-
-//       if (fyMonth <= 9) {
-//         calendarMonth = fyMonth + 3;
-//         year = startYear;
-//       } else {
-//         calendarMonth = fyMonth - 9;
-//         year = endYear;
-//       }
-
+//       let calendarMonth = fyMonth <= 9 ? fyMonth + 3 : fyMonth - 9;
+//       let year = fyMonth <= 9 ? startYear : endYear;
 //       fromDate = new Date(year, calendarMonth - 1, 1);
 //       toDate = new Date(year, calendarMonth, 0, 23, 59, 59, 999);
 //     }
-
 //     let match = { ...matchBase };
+//     if (fromDate && toDate) match.createdAt = { $gte: fromDate, $lte: toDate };
+//     if (searchList.length > 0) match[filterField] = { $in: searchList };
 
-//     if (fromDate && toDate) {
-//       match.createdAt = { $gte: fromDate, $lte: toDate };
-//     }
-
-//     if (searchList.length > 0) {
-//       match[filterField] = { $in: searchList };
-//     }
-
-//     pipelines.push([
-//       { $match: match },
-//       { $unwind: "$items" },
-//       ...(searchList.length > 0
-//         ? [{ $match: { [filterField]: { $in: searchList } } }]
-//         : []),
-//       {
-//         $facet: {
-
-//           // 🔹 Article Summary (ALWAYS article wise)
-//           articleSummary: [
-//             {
-//               $group: {
-//                 _id: reportGroupField,
-//                 totalQuantitySold: { $sum: "$items.quantity" },
-//                 totalOrders: { $sum: 1 },
-//               },
-//             },
-//             { $sort: { totalQuantitySold: -1 } },
-//             {
-//               $addFields: {
-//                 ...(financialYear && { financialYear }),
-//                 ...(fyMonth && { month: fyMonth }),
-//               },
-//             },
-//           ],
-
-//           // 🔹 Color + Size Summary (ALWAYS article wise)
-//           colorSizeSummary: [
-//             {
-//               $group: {
-//                 _id: {
-//                   article: "$items.article",
-//                   color: "$items.color",
-//                   size: "$items.size",
-//                 },
-//                 totalQuantitySold: { $sum: "$items.quantity" },
-//               },
-//             },
-//             {
-//               $project: {
-//                 _id: 0,
-//                 articleOrCategory: "$_id.article",
-//                 color: "$_id.color",
-//                 size: "$_id.size",
-//                 totalQuantitySold: 1,
-//                 ...(financialYear && { financialYear }),
-//                 ...(fyMonth && { month: fyMonth }),
-//               },
-//             },
-//             { $sort: { articleOrCategory: 1, color: 1, size: 1 } },
-//           ],
-
-//           // 🔥 CUMULATIVE TOTAL LOGIC
-//           cumulativeTotalByArticle: type === "category"
-//             ? [
-//                 {
-//                   $group: {
-//                     _id: "$items.categoryCode", // single total for category
-//                     grandTotalQuantity: { $sum: "$items.quantity" },
-//                     categoryCode: { $first: "$items.categoryCode" },
-//                     totalOrderLines: { $sum: 1 },
-//                   },
-//                 },
-//                 {
-//                   $project: {
-//                     _id: 0,
-//                     categoryCode: 1,
-//                     articleOrCategory: "$_id",
-//                     grandTotalQuantity: 1,
-//                     totalOrderLines: 1,
-//                     ...(financialYear && { financialYear }),
-//                     ...(fyMonth && { month: fyMonth }),
-//                   },
-//                 },
-//               ]
-//             : [
-//                 {
-//                   $group: {
-//                     _id: reportGroupField,
-//                     grandTotalQuantity: { $sum: "$items.quantity" },
-//                     categoryCode: { $first: "$items.categoryCode" },
-//                     totalOrderLines: { $sum: 1 },
-//                   },
-//                 },
-//                 {
-//                   $project: {
-//                     _id: 0,
-//                     // categoryCode: 1,
-//                     articleOrCategory: "$_id",
-//                     grandTotalQuantity: 1,
-//                     totalOrderLines: 1,
-//                     ...(financialYear && { financialYear }),
-//                     ...(fyMonth && { month: fyMonth }),
-//                   },
-//                 },
-//               ],
-//         },
-//       },
-//     ]);
+//     pipelines.push(buildPipeline(match, fyMonth));
 //   }
 
-//   // =========================
-//   // QUARTERLY
-//   // =========================
+//   // Logic for Quarterly iterations
 //   for (const q of quarterList) {
-
 //     const months = quarterToMonths[q];
-//     const fromMonth = months[0];
-//     const toMonth = months[months.length - 1];
+//     const fromYear = months[0] >= 4 ? startYear : endYear;
+//     const toYear = months[2] >= 4 ? startYear : endYear;
+//     const fromDate = new Date(fromYear, months[0] - 1, 1);
+//     const toDate = new Date(toYear, months[2], 0, 23, 59, 59, 999);
 
-//     const fromYear = fromMonth >= 4 ? startYear : endYear;
-//     const toYear = toMonth >= 4 ? startYear : endYear;
+//     let match = { ...matchBase, createdAt: { $gte: fromDate, $lte: toDate } };
+//     if (searchList.length > 0) match[filterField] = { $in: searchList };
 
-//     const fromDate = new Date(fromYear, fromMonth - 1, 1);
-//     const toDate = new Date(toYear, toMonth, 0, 23, 59, 59, 999);
-
-//     let match = {
-//       ...matchBase,
-//       createdAt: { $gte: fromDate, $lte: toDate },
-//     };
-
-//     if (searchList.length > 0) {
-//       match[filterField] = { $in: searchList };
-//     }
-
-//     pipelines.push([
-//       { $match: match },
-//       { $unwind: "$items" },
-//       ...(searchList.length > 0
-//         ? [{ $match: { [filterField]: { $in: searchList } } }]
-//         : []),
-//       {
-//         $facet: {
-
-//           articleSummary: [
-//             {
-//               $group: {
-//                 _id: reportGroupField,
-//                 totalQuantitySold: { $sum: "$items.quantity" },
-//                 totalOrders: { $sum: 1 },
-//               },
-//             },
-//             { $sort: { totalQuantitySold: -1 } },
-//             {
-//               $addFields: {
-//                 ...(financialYear && { financialYear }),
-//                 quarter: q,
-//               },
-//             },
-//           ],
-
-//           colorSizeSummary: [
-//             {
-//               $group: {
-//                 _id: {
-//                   article: "$items.article",
-//                   color: "$items.color",
-//                   size: "$items.size",
-//                 },
-//                 totalQuantitySold: { $sum: "$items.quantity" },
-//               },
-//             },
-//             {
-//               $project: {
-//                 _id: 0,
-//                 articleOrCategory: "$_id.article",
-//                 color: "$_id.color",
-//                 size: "$_id.size",
-//                 totalQuantitySold: 1,
-//                 ...(financialYear && { financialYear }),
-//                 quarter: q,
-//               },
-//             },
-//             { $sort: { articleOrCategory: 1, color: 1, size: 1 } },
-//           ],
-
-//           cumulativeTotalByArticle: type === "category"
-//             ? [
-//                 {
-//                   $group: {
-//                     _id: null,
-//                     grandTotalQuantity: { $sum: "$items.quantity" },
-//                     totalOrderLines: { $sum: 1 },
-//                   },
-//                 },
-//                 {
-//                   $project: {
-//                     _id: 0,
-//                     articleOrCategory:
-//                       searchList.length > 0
-//                         ? searchList[0]
-//                         : "ALL_CATEGORY",
-//                     grandTotalQuantity: 1,
-//                     totalOrderLines: 1,
-//                     ...(financialYear && { financialYear }),
-//                     quarter: q,
-//                   },
-//                 },
-//               ]
-//             : [
-//                 {
-//                   $group: {
-//                     _id: reportGroupField,
-//                     grandTotalQuantity: { $sum: "$items.quantity" },
-//                     totalOrderLines: { $sum: 1 },
-//                   },
-//                 },
-//                 {
-//                   $project: {
-//                     _id: 0,
-//                     articleOrCategory: "$_id",
-//                     grandTotalQuantity: 1,
-//                     totalOrderLines: 1,
-//                     ...(financialYear && { financialYear }),
-//                     quarter: q,
-//                   },
-//                 },
-//               ],
-//         },
-//       },
-//     ]);
+//     pipelines.push(buildPipeline(match, null, q));
 //   }
 
-//   return pipelines;
+//   return pipelines; // Returns an array of arrays (pipelines)
 // };
-
 
 exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter = {} } = {}) => {
   const searchList = Array.isArray(name) ? name : [name].filter(Boolean);
@@ -1483,9 +1113,9 @@ exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter 
   }
 
   const filterField = type === "category" ? "items.categoryCode" : "items.article";
-  const reportGroupField = "$items.article";
+  // ✅ FIX 1: reportGroupField now respects type
+  const reportGroupField = type === "category" ? "$items.categoryCode" : "$items.article";
 
-  // Reusable function to build the pipeline stages for each period
   const buildPipeline = (match, fyMonth = null, q = null) => [
     { $match: match },
     { $unwind: "$items" },
@@ -1495,7 +1125,7 @@ exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter 
         articleSummary: [
           {
             $group: {
-              _id: reportGroupField,
+              _id: reportGroupField, // ✅ Now groups by category or article based on type
               totalQuantitySold: { $sum: "$items.quantity" },
               totalOrders: { $sum: 1 },
             },
@@ -1512,14 +1142,19 @@ exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter 
         colorSizeSummary: [
           {
             $group: {
-              _id: { article: "$items.article", color: "$items.color", size: "$items.size" },
+              // ✅ FIX 2: group by categoryCode or article based on type
+              _id: {
+                articleOrCategory: type === "category" ? "$items.categoryCode" : "$items.article",
+                color: "$items.color",
+                size: "$items.size",
+              },
               totalQuantitySold: { $sum: "$items.quantity" },
             },
           },
           {
             $project: {
               _id: 0,
-              articleOrCategory: "$_id.article",
+              articleOrCategory: "$_id.articleOrCategory", // ✅ FIX 3: matches new _id key
               color: "$_id.color",
               size: "$_id.size",
               totalQuantitySold: 1,
@@ -1550,8 +1185,8 @@ exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter 
         ],
         TallyTotal: [
           { $group: { _id: null, total: { $sum: "$items.quantity" } } },
-          { $project: { _id: 0, totalSales: "$total" } }
-        ]
+          { $project: { _id: 0, totalSales: "$total" } },
+        ],
       },
     },
   ];
@@ -1586,10 +1221,8 @@ exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter 
     pipelines.push(buildPipeline(match, null, q));
   }
 
-  return pipelines; // Returns an array of arrays (pipelines)
+  return pipelines;
 };
-
-
 
 
 

@@ -21,6 +21,7 @@ const profile= require("./profile.route");
 const adminAuthRoutes = require("./AdminAuth.route");
 const WishListRoutes = require("./wishlist.route");
 const TallyRoutes = require("./Tally.route");
+const EmailSalesRoutes = require("./EmailStockAlert.route");
 
 const authMiddleware = require("../middleware/authMiddleware"); // path as needed
 
@@ -87,5 +88,8 @@ router.use("/wishlist", WishListRoutes);
 
 //Tally 
 router.use("/tally", TallyRoutes);
+
+//Tally 
+router.use("/emailSales", EmailSalesRoutes);
 
 module.exports = router;

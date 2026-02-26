@@ -17,3 +17,4 @@ module.exports.Profile = require('./profile.controller');
 module.exports.AdminAuthService = require('./AdminAuth.controller');
 module.exports.WishlistController = require('./wishlist.controller');
 module.exports.TallyController = require('./Tally.controller');
+module.exports.SellEmailController = require('./EmailStockAlert.controller');

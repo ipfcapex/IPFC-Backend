@@ -11,6 +11,7 @@ const http = require("http");
 const { Server } = require("socket.io");
 const path = require("path");
 require("./services/monitor.token");
+require("./services/runStockReportJob.service");
 
 dotenv.config();
 
@@ -112,7 +113,7 @@ if (process.env.NODE_ENV === "development") {
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "ok",
-    service: "YES ITS WORKING FINE!!!!!! : 1.0)) 100.0 ",
+    service: "YES ITS WORKING FINE!!!!!! : 2.0)) 100.0 ",
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
   });
