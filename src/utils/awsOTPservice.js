@@ -286,7 +286,7 @@ const sendStockEmail = async (data, monthName) => {
 
   const rawEmail = [
     `From: noreply@apexshoes.org`,
-    `To: bhuvaneshwarpatil@sdlccorp.com`,
+    `To: hargunn01@gmail.com`,
     `Subject: Stock Report - ${monthName}`,
     "MIME-Version: 1.0",
     `Content-Type: multipart/mixed; boundary="${boundary}"`,
