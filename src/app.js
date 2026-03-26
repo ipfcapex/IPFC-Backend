@@ -113,7 +113,7 @@ if (process.env.NODE_ENV === "development") {
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "ok",
-    service: "YES ITS WORKING FINE!!!!!! : 2.0)) 100.0 ",
+    service: "YES ITS WORKING FINE Version 1.0",
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
   });

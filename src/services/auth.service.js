@@ -400,7 +400,7 @@ const createUser = async ({
   const existing = await User.findOne({
     $or: [{ email: trimmedEmail }, { phone: trimmedPhone }],
   });
-  if (existing) {
+  if (existing && existing.isActive === true) {
     throw new Error("Email or phone already registered");
   }
 
@@ -413,6 +413,7 @@ const createUser = async ({
       throw new Error("Failed to upload profile image");
     }
   }
+  
 
   const user = new User({
     name: name.trim(),
@@ -470,70 +471,170 @@ const getUserById = async (id) => {
 };
 
 //Update user info (supports image update)
+// const updateUser = async (id, updateData, profileImage) => {
+//   const user = await User.findById(id);
+//   if (!user) throw new Error("User not found");
+
+//   if (updateData.phone) {
+//     const existingPhoneUser = await User.findOne({ phone: updateData.phone });
+//     if (
+//       existingPhoneUser &&
+//       existingPhoneUser._id.toString() !== id.toString()
+//     ) {
+//       throw new Error("Phone number already in use by another user");
+//     }
+//   }
+
+//  if (updateData.password) {
+//     // Run schema validator manually before hashing
+//     const tempUser = new User({ ...user.toObject(), password: updateData.password });
+
+//     try {
+//       await tempUser.validate(); 
+//     } catch (validationError) {
+//       throw new Error(validationError.errors.password.message);
+//     }
+
+//     // Hash new password
+//     const hashedPassword = await bcrypt.hash(updateData.password, 10);
+
+//     // Check if another user has same hashed password (optional but uncommon)
+//     const existingPassword = await User.findOne({ password: hashedPassword });
+//     if (existingPassword && existingPassword._id.toString() !== id.toString()) {
+//       throw new Error("Password already in use by another user");
+//     }
+
+//     updateData.password = hashedPassword;
+//   }
+
+//   if (updateData.email) {
+//     const existingEmailUser = await User.findOne({ email: updateData.email });
+//     if (
+//       existingEmailUser &&
+//       existingEmailUser._id.toString() !== id.toString()
+//     ) {
+//       throw new Error("Email already in use by another user");
+//     }
+//   }
+//  if (profileImage) {
+//     try {
+//       const imageUrl = await uploadToS3(profileImage);  // ⬅️ AWS upload
+//       updateData.profileImage = imageUrl;
+//     } catch (err) {
+//       console.error("AWS S3 upload failed:", err);
+//       throw new Error("Failed to upload profile image");
+//     }
+//   }
+
+//   const formatIds = (data) => {
+//     if (!data) return undefined; // Don't update if null
+//     if (Array.isArray(data)) return data;
+//     if (typeof data === 'string') {
+//       return data.replace(/[\[\]'\n\r]/g, '').split(',').map(id => id.trim()).filter(id => id);
+//     }
+//     return undefined;
+//   };
+
+// const updateQuery = {};
+// const pushQuery = {};
+
+// if (updateData.production) {
+//   if(user.role === 'Packing Reporter') {
+//   updateQuery.$push = { production: updateData.production };
+//   }
+// }if (updateData.production) {
+//     const cleanedProduction = formatIds(updateData.production);
+    
+//     if (user.role === 'Packing Reporter') {
+//       // Use $push to ADD to existing array
+//       pushQuery.$push = { production: { $each: cleanedProduction } };
+//       delete finalUpdate.production; // Remove from standard update so it doesn't overwrite
+//     } else {
+//       finalUpdate.production = cleanedProduction;
+//     }
+//   }
+
+
+//   // const updatedUser = await User.findByIdAndUpdate(id, updateData, { new: true });
+//   const updatedUser = await User.findByIdAndUpdate(
+//     id, 
+//     { ...finalUpdate, ...pushQuery }, 
+//     { new: true, runValidators: true }
+//   );
+//   return updatedUser;
+// }; 
+
 const updateUser = async (id, updateData, profileImage) => {
   const user = await User.findById(id);
   if (!user) throw new Error("User not found");
 
-  if (updateData.phone) {
-    const existingPhoneUser = await User.findOne({ phone: updateData.phone });
-    if (
-      existingPhoneUser &&
-      existingPhoneUser._id.toString() !== id.toString()
-    ) {
-      throw new Error("Phone number already in use by another user");
+  // 1. Uniqueness Checks (Email & Phone)
+  const uniqueFields = ['email', 'phone'];
+  for (const field of uniqueFields) {
+    if (updateData[field]) {
+      const existing = await User.findOne({ [field]: updateData[field] });
+      if (existing && existing._id.toString() !== id.toString()) {
+        throw new Error(`${field.charAt(0).toUpperCase() + field.slice(1)} already in use`);
+      }
     }
   }
 
- if (updateData.password) {
-    // Run schema validator manually before hashing
-    const tempUser = new User({ ...user.toObject(), password: updateData.password });
-
-    try {
-      await tempUser.validate(); 
-    } catch (validationError) {
-      throw new Error(validationError.errors.password.message);
-    }
-
-    // Hash new password
+  // 2. Password Handling
+  if (updateData.password) {
+    // Manual validation if needed, otherwise let the schema handle it
     const hashedPassword = await bcrypt.hash(updateData.password, 10);
-
-    // Check if another user has same hashed password (optional but uncommon)
-    const existingPassword = await User.findOne({ password: hashedPassword });
-    if (existingPassword && existingPassword._id.toString() !== id.toString()) {
-      throw new Error("Password already in use by another user");
-    }
-
     updateData.password = hashedPassword;
   }
 
-  if (updateData.email) {
-    const existingEmailUser = await User.findOne({ email: updateData.email });
-    if (
-      existingEmailUser &&
-      existingEmailUser._id.toString() !== id.toString()
-    ) {
-      throw new Error("Email already in use by another user");
-    }
-  }
- if (profileImage) {
+  // 3. Profile Image Upload
+  if (profileImage) {
     try {
-      const imageUrl = await uploadToS3(profileImage);  // ⬅️ AWS upload
+      const imageUrl = await uploadToS3(profileImage);
       updateData.profileImage = imageUrl;
     } catch (err) {
-      console.error("AWS S3 upload failed:", err);
       throw new Error("Failed to upload profile image");
     }
   }
 
-const updateQuery = {};
+  // 4. FIX FOR CAST ERROR (Cleaning the arrays)
+  const formatIds = (data) => {
+    if (!data) return undefined; // Don't update if null
+    if (Array.isArray(data)) return data;
+    if (typeof data === 'string') {
+      return data.replace(/[\[\]'\n\r]/g, '').split(',').map(id => id.trim()).filter(id => id);
+    }
+    return undefined;
+  };
 
-if (updateData.production) {
-  if(user.role === 'Packing Reporter') {
-  updateQuery.$push = { production: updateData.production };
+  // 5. Build the final Update Object
+  const finalUpdate = { ...updateData };
+  const pushQuery = {};
+
+  // Clean the IDs before updating
+  if (updateData.production) {
+    const cleanedProduction = formatIds(updateData.production);
+    
+    if (user.role === 'Packing Reporter') {
+      // Use $push to ADD to existing array
+      pushQuery.$push = { production: { $each: cleanedProduction } };
+      delete finalUpdate.production; // Remove from standard update so it doesn't overwrite
+    } else {
+      finalUpdate.production = cleanedProduction;
+    }
   }
-}
 
-  const updatedUser = await User.findByIdAndUpdate(id, updateData, { new: true });
+  if (updateData.warehouses) {
+    finalUpdate.warehouses = formatIds(updateData.warehouses);
+  }
+
+  // 6. Execute Update
+  // Combine standard $set (finalUpdate) with any $push (pushQuery)
+  const updatedUser = await User.findByIdAndUpdate(
+    id, 
+    { ...finalUpdate, ...pushQuery }, 
+    { new: true, runValidators: true }
+  );
+
   return updatedUser;
 };
 
