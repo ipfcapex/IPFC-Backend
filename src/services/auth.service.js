@@ -640,13 +640,21 @@ const updateUser = async (id, updateData, profileImage) => {
 
 //Soft delete a user (mark inactive)
 const deleteUser = async (id) => {
-  const user = await User.findByIdAndUpdate(
+
+  const user = await User.findById(id);
+  
+  // Throw error immediately if the user doesn't exist
+  if (!user) throw new Error("User not found");
+
+  const updatedUser = await User.findByIdAndUpdate(
     id,
-    { isActive: false },
+    { isActive: false,
+      email: `deactivated_${Date.now()}_${user.email}`,
+      phone: `${Date.now()}00${user.phone}` }, // Anonymize email and phone to prevent conflicts
     { new: true }
   );
-  if (!user) throw new Error("User not found");
-  return user;
+  
+  return updatedUser;
 };
 
 // Send OTP for Forget Password
