@@ -6,6 +6,7 @@ const { Product } = require("../models");
 const { Cart } = require("../models")
 const { Schemes } = require("../models")
 const { Wishlist } = require("../models")
+const QRCODE = require("../models/qrCode.model");
 const { sendNotification } = require("./notificationService");
 
 
@@ -20,154 +21,6 @@ function normalizeKey(obj) {
     String(obj.quality ?? "").trim().toLowerCase(),
   ].join("-");
 }
-
-//Get Sells
-// exports.getAggregatedStock = async (page = 1, limit = 10, search = "") => {
-//   const skip = (page - 1) * limit;
-
-//   // Step 1: Aggregate Stock
-//   const stockAgg = await Stock.aggregate([
-//     { $match: { isActive: { $ne: false } } }, 
-//     { $unwind: "$stockdata" },
-//     { $match: { "stockdata.article": { $nin: [null, ""] } } },
-//     {
-//       $group: {
-//         _id: {
-//           article: "$stockdata.article",
-//           categoryCode: "$stockdata.categoryCode",
-//           color: "$stockdata.color",
-//           size: "$stockdata.size",
-//           type: "$stockdata.type",
-//           quality: "$stockdata.quality",
-//         },
-//         stockQty: {
-//           $sum: {
-//             $cond: [
-//               { $eq: ["$stockdata.dispatched", false] },
-//               "$stockdata.quantity",
-//               0,
-//             ],
-//           },
-//         },
-//       },
-//     },
-//   ]);
-
-//   // Step 2: Aggregate Production
-//   const prodAgg = await Production.aggregate([
-//     { $match: { isActive: { $ne: false } } }, 
-//     { $unwind: "$category" },
-//     { $match: { article: { $nin: [null, ""] } } },
-//     {
-//       $group: {
-//         _id: {
-//           article: "$article",
-//           categoryCode: "$category.categoryCode",
-//           color: "$category.color",
-//           size: "$category.size",
-//           type: "$category.type",
-//           quality: "$category.quality",
-//         },
-//         totalProduction: { $sum: "$productionQuantity" },
-//         totalDispatched: { $sum: { $ifNull: ["$dispatchedQuantity", 0] } },
-//       },
-//     },
-//     {
-//       $project: {
-//         _id: 1,
-//         productionQty: { $subtract: ["$totalProduction", "$totalDispatched"] },
-//       },
-//     },
-//   ]);
-
-//   // Step 3: Combine stock + production
-//   const combinedMap = {};
-//   const normalizeKey = obj =>
-//     `${obj.article}_${obj.categoryCode}_${obj.color}_${obj.size}_${obj.type}_${obj.quality}`;
-
-//   stockAgg.forEach(item => {
-//     const key = normalizeKey(item._id);
-//     combinedMap[key] = { stockQty: item.stockQty ?? 0, productionQty: 0 };
-//   });
-
-//   prodAgg.forEach(item => {
-//     const key = normalizeKey(item._id);
-//     if (!combinedMap[key]) {
-//       combinedMap[key] = { stockQty: 0, productionQty: item.productionQty ?? 0 };
-//     } else {
-//       combinedMap[key].productionQty = item.productionQty ?? 0;
-//     }
-//   });
-
-//   // Step 4: Pull images from Product model
-//   for (const key of Object.keys(combinedMap)) {
-//     const [article, categoryCode, color, size] = key.split("_");
-
-//     const product = await Product.findOne({
-//       article,
-//       category: {
-//         $elemMatch: {
-//           categoryCode,
-//           color: { $regex: new RegExp(`^${color}$`, "i") },
-//           size: { $regex: new RegExp(`^${size}$`, "i") },
-//         },
-//       },
-//     }).select("category.$");
-
-//     if (product && product.category?.length > 0) {
-//       combinedMap[key].image = product.category[0].image || [];
-//     }
-//   }
-
-//   // Step 5: Convert combinedMap to array
-//   const result = Object.keys(combinedMap).map(key => {
-//     const [article, categoryCode, color, size, type, quality] = key.split("_");
-//     const quantities = combinedMap[key];
-//     return {
-//       article,
-//       categoryCode,
-//       color,
-//       size,
-//       type,
-//       quality,
-//       Production_Qty: quantities.productionQty,
-//       Warehouse_Qty: quantities.stockQty,
-//       Total_Available: quantities.stockQty + quantities.productionQty,
-//       image: quantities.image,
-//     };
-//   });
-
-//   // Step 5: Apply Search (case-insensitive)
-//   const filteredResult = (search && search.trim() !== "")
-//     ? result.filter(item => {
-//         const regex = new RegExp(search, "i");
-//         return (
-//           regex.test(String(item.article)) ||
-//           regex.test(String(item.categoryCode)) ||
-//           regex.test(String(item.color)) ||
-//           regex.test(String(item.size)) ||
-//           regex.test(String(item.type)) ||
-//           regex.test(String(item.quality))
-//         );
-//       })
-//     : result;
-
-//   filteredResult.sort((a, b) => b.Total_Available - a.Total_Available);
-
-//   // Pagination
-//   const totalItems = filteredResult.length;
-//   const totalPages = Math.ceil(totalItems / limit);
-//   const paginatedData = filteredResult.slice(skip, skip + limit);
-
-//   return {
-//     data: paginatedData,
-//     pagination: {
-//       currentPage: page,
-//       totalItems,
-//       totalPages,
-//     },
-//   };
-// };
 
 exports.getAggregatedStock = async (page = 1, limit = 10, search = "") => {
   const skip = (page - 1) * limit;
@@ -209,30 +62,36 @@ exports.getAggregatedStock = async (page = 1, limit = 10, search = "") => {
   ]);
 
   /* ===============================
-     2️⃣ PRODUCTION STOCK
+     2️⃣ PRODUCTION STOCK (Scanned QR Codes only)
      =============================== */
-  const prodAgg = await Production.aggregate([
-    { $match: { isActive: { $ne: false } } },
-    { $unwind: "$category" },
-    { $match: { article: { $nin: [null, ""] } } },
+  const prodAgg = await QRCODE.aggregate([
+    { $unwind: "$qrCodes" },
     {
-      $group: {
-        _id: {
-          article: "$article",
-          categoryCode: "$category.categoryCode",
-          color: "$category.color",
-          size: "$category.size",
-          type: "$category.type",
-          quality: "$category.quality",
-        },
-        totalProduction: { $sum: "$productionQuantity" },
-        totalDispatched: { $sum: { $ifNull: ["$dispatchedQuantity", 0] } },
+      $match: {
+        "qrCodes.factoryScan": true,
+        "qrCodes.article": { $nin: [null, ""] },
       },
     },
     {
-      $project: {
-        _id: 1,
-        productionQty: { $subtract: ["$totalProduction", "$totalDispatched"] },
+      $group: {
+        _id: {
+          article: "$qrCodes.article",
+          categoryCode: "$qrCodes.categoryCode",
+          color: "$qrCodes.color",
+          size: "$qrCodes.size",
+          type: "$qrCodes.type",
+          quality: "$qrCodes.quality",
+        },
+        productionQty: {
+          $sum: {
+            $convert: {
+              input: "$qrCodes.quantity",
+              to: "int",
+              onError: 1,
+              onNull: 1,
+            },
+          },
+        },
       },
     },
   ]);
