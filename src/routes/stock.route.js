@@ -5,6 +5,7 @@ const { stockController } = require("../controllers");
 router.post("/add", stockController.createStockbyQr);
 router.get("/", stockController.getAllStock);
 router.get("/get", stockController.getAllStockss);
+router.get("/summary/in-out", stockController.getStockInOutSummary);
 router.get("/:id", stockController.getStockById);
 
 router.get("/warehouse/:warehouseId", stockController.getStockByWarehouseController);

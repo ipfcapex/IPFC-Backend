@@ -11,8 +11,10 @@ const qrCodeEntrySchema = new mongoose.Schema({
   quantity: { type: Number, default: 0 },
   qrData: { type: String}, // Base64 image,
   dispatched: { type: Boolean, default: false }, 
+  stockinAt: { type: Date, default: Date.now },
+  dispatchAt: { type: Date } // only set when dispatched is true
 
-}, { _id: false });
+}, { _id: false});
 
 const formWarehouseSubSchema = new mongoose.Schema({
   fromwarehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse' },

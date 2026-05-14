@@ -275,4 +275,22 @@ exports.addScanRecordss = async (req, res) => {
   }
 };
 
+// Stock in/out summary for current day, month and year
+exports.getStockInOutSummary = async (req, res) => {
+  try {
+    const data = await stockService.getStockInOutSummary();
+    return res.status(200).json({
+      success: true,
+      message: "Stock in/out summary fetched successfully",
+      data,
+    });
+  } catch (error) {
+    console.error("Error in getStockInOutSummary:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 

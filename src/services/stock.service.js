@@ -452,6 +452,7 @@ exports.scanAndDispatch = async (req, res) => {
     // ✅ Mark item as dispatched
     stockItem.dispatched = true;
     stock.dispatchStock += 1;
+    stockItem.dispatchAt = new Date();
 
     await stock.save();
 
@@ -470,6 +471,7 @@ exports.scanAndDispatch = async (req, res) => {
         quantity: stockItem.quantity,
         qrData: stockItem.qrData,
         dispatched: stockItem.dispatched,
+        dispatchAt: stockItem.dispatchAt,
       },
     });
   } catch (err) {
@@ -863,4 +865,140 @@ exports.getstockScanedbyWM = async (id, article, ScanByorder, warehouse, quantit
   return order;
 };
 
+//create a stock in and out
+// Aggregates stockdata to report stock-in (by stockinAt) and stock-out
+// (dispatched items by dispatchAt) for the current day, month and year.
+exports.getStockInOutSummary = async () => {
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  // Financial year: April 1 to March 31. If current month is Jan-Mar (0-2),
+  // FY started in April of the previous calendar year.
+  const fyStartYear = now.getMonth() < 3 ? now.getFullYear() - 1 : now.getFullYear();
+  const startOfYear = new Date(fyStartYear, 3, 1);
 
+  const sumIn = (from) => ({
+    $sum: {
+      $cond: [
+        { $gte: ["$stockdata.stockinAt", from] },
+        { $ifNull: ["$stockdata.quantity", 0] },
+        0,
+      ],
+    },
+  });
+
+  const sumOut = (from) => ({
+    $sum: {
+      $cond: [
+        {
+          $and: [
+            { $eq: ["$stockdata.dispatched", true] },
+            { $gte: ["$stockdata.dispatchAt", from] },
+          ],
+        },
+        { $ifNull: ["$stockdata.quantity", 0] },
+        0,
+      ],
+    },
+  });
+
+  const variantKey = {
+    article: "$stockdata.article",
+    categoryCode: "$stockdata.categoryCode",
+    type: "$stockdata.type",
+    size: "$stockdata.size",
+    color: "$stockdata.color",
+    quality: "$stockdata.quality",
+  };
+
+  const [data] = await Stock.aggregate([
+    { $match: { isActive: true } },
+    { $unwind: "$stockdata" },
+    {
+      $facet: {
+        totals: [
+          {
+            $group: {
+              _id: null,
+              dayIn: sumIn(startOfDay),
+              dayOut: sumOut(startOfDay),
+              monthIn: sumIn(startOfMonth),
+              monthOut: sumOut(startOfMonth),
+              yearIn: sumIn(startOfYear),
+              yearOut: sumOut(startOfYear),
+            },
+          },
+        ],
+        byVariant: [
+          {
+            $group: {
+              _id: variantKey,
+              dayIn: sumIn(startOfDay),
+              dayOut: sumOut(startOfDay),
+              monthIn: sumIn(startOfMonth),
+              monthOut: sumOut(startOfMonth),
+              yearIn: sumIn(startOfYear),
+              yearOut: sumOut(startOfYear),
+            },
+          },
+          {
+            $project: {
+              _id: 0,
+              article: "$_id.article",
+              categoryCode: "$_id.categoryCode",
+              type: "$_id.type",
+              size: "$_id.size",
+              color: "$_id.color",
+              quality: "$_id.quality",
+              dayIn: 1,
+              dayOut: 1,
+              monthIn: 1,
+              monthOut: 1,
+              yearIn: 1,
+              yearOut: 1,
+            },
+          },
+          { $sort: { article: 1, categoryCode: 1, color: 1, size: 1 } },
+        ],
+      },
+    },
+  ]);
+
+  const t = (data && data.totals && data.totals[0]) || {};
+  const rows = (data && data.byVariant) || [];
+
+  const pickVariant = (row) => ({
+    article: row.article,
+    categoryCode: row.categoryCode,
+    type: row.type,
+    size: row.size,
+    color: row.color,
+    quality: row.quality,
+  });
+
+  const byVariant = {
+    day: rows
+      .filter((r) => (r.dayIn || 0) > 0 || (r.dayOut || 0) > 0)
+      .map((r) => ({ ...pickVariant(r), stockIn: r.dayIn || 0, stockOut: r.dayOut || 0 })),
+    month: rows
+      .filter((r) => (r.monthIn || 0) > 0 || (r.monthOut || 0) > 0)
+      .map((r) => ({ ...pickVariant(r), stockIn: r.monthIn || 0, stockOut: r.monthOut || 0 })),
+    year: rows
+      .filter((r) => (r.yearIn || 0) > 0 || (r.yearOut || 0) > 0)
+      .map((r) => ({ ...pickVariant(r), stockIn: r.yearIn || 0, stockOut: r.yearOut || 0 })),
+  };
+
+  return {
+    range: {
+      day: startOfDay,
+      month: startOfMonth,
+      year: startOfYear,
+      financialYear: `${fyStartYear}-${String((fyStartYear + 1) % 100).padStart(2, "0")}`,
+      generatedAt: now,
+    },
+    day: { stockIn: t.dayIn || 0, stockOut: t.dayOut || 0 },
+    month: { stockIn: t.monthIn || 0, stockOut: t.monthOut || 0 },
+    year: { stockIn: t.yearIn || 0, stockOut: t.yearOut || 0 },
+    byVariant,
+  };
+};
