@@ -124,10 +124,9 @@ const CartSchema = new mongoose.Schema({
   note: [{
     _id: false,
     text: String,
-    accountSectionApproval: {
+    by: {
       type: String,
-      enum: ["APPROVED", "REJECTED", "PENDING"],
-      default: "PENDING"
+      enum: ["ACCOUNT_MANAGER", "INVENTORY_MANAGER", "SALES_PERSON"],
     },
     date: {
       type: String,

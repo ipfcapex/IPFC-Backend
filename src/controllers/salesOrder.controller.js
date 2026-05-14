@@ -29,7 +29,7 @@ exports.getAggregatedStocks = async (req, res) => {
 exports.AddOrdertoCartContorller = async (req, res) => {
   console.log("Sell order")
   try {
-    const { customer, location, items, schemesId } = req.body;
+    const { customer, location, items, schemesId, note } = req.body;
     const createdBy = req.user.id || req.user._id;
 
     if (!customer || !location || !Array.isArray(items) || items.length === 0) {
@@ -39,7 +39,7 @@ exports.AddOrdertoCartContorller = async (req, res) => {
       });
     }
 
-    const order = await orderService.AddOrdertoCart({ customer, location, items, schemesId, createdBy });
+    const order = await orderService.AddOrdertoCart({ customer, location, items, schemesId, createdBy, note });
 
     // Build dynamic message
     let message = "Order created successfully";

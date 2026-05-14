@@ -408,7 +408,7 @@ allKeys.forEach(key => {
 // };
 
 //Cart 
-exports.AddOrdertoCart = async ({ customer, location, items, schemesId, createdBy }) => {
+exports.AddOrdertoCart = async ({ customer, location, items, schemesId, createdBy, note }) => {
   // 1️⃣ Validate customer
   const existingCustomer = await Customer.findOne({ name: customer });
   if (!existingCustomer) throw new Error("Customer not found");
@@ -495,6 +495,7 @@ const itemWithImage = { ...item,articleCode: dbarticleocode, image: imageUrl ? [
     WishList: wishlistItems,
     createdBy,
     isActive: true,
+    note: note ? [{ text: note, by: "SALES_PERSON" }] : []
   };
 
   if (scheme) newOrderData.scheme = scheme._id;

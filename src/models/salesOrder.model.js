@@ -152,7 +152,7 @@ const orderSchema = new mongoose.Schema(
         text: String,
         by: {
           type: String,
-          enum: ["ACCOUNT_MANAGER", "INVENTORY_MANAGER"],
+          enum: ["ACCOUNT_MANAGER", "INVENTORY_MANAGER","SALES_PERSON"],
           // required: true
         },
         date: {
