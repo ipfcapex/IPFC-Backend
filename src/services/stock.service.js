@@ -868,7 +868,7 @@ exports.getstockScanedbyWM = async (id, article, ScanByorder, warehouse, quantit
 //create a stock in and out
 // Aggregates stockdata to report stock-in (by stockinAt) and stock-out
 // (dispatched items by dispatchAt) for the current day, month and year.
-exports.getStockInOutSummary = async () => {
+exports.getStockInOutSummary = async ({ warehouseId } = {}) => {
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -911,8 +911,20 @@ exports.getStockInOutSummary = async () => {
     quality: "$stockdata.quality",
   };
 
+  const match = { isActive: true };
+  if (warehouseId) {
+    if (!mongoose.Types.ObjectId.isValid(warehouseId)) {
+      throw new Error("Invalid warehouseId");
+    }
+    const warehouseExists = await Warehouse.exists({ _id: warehouseId });
+    if (!warehouseExists) {
+      throw new Error(`Warehouse not found for id: ${warehouseId}`);
+    }
+    match.warehouse = new mongoose.Types.ObjectId(warehouseId);
+  }
+
   const [data] = await Stock.aggregate([
-    { $match: { isActive: true } },
+    { $match: match },
     { $unwind: "$stockdata" },
     {
       $facet: {
@@ -996,6 +1008,7 @@ exports.getStockInOutSummary = async () => {
       financialYear: `${fyStartYear}-${String((fyStartYear + 1) % 100).padStart(2, "0")}`,
       generatedAt: now,
     },
+    warehouseId: warehouseId || null,
     day: { stockIn: t.dayIn || 0, stockOut: t.dayOut || 0 },
     month: { stockIn: t.monthIn || 0, stockOut: t.monthOut || 0 },
     year: { stockIn: t.yearIn || 0, stockOut: t.yearOut || 0 },

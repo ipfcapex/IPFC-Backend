@@ -278,7 +278,12 @@ exports.addScanRecordss = async (req, res) => {
 // Stock in/out summary for current day, month and year
 exports.getStockInOutSummary = async (req, res) => {
   try {
-    const data = await stockService.getStockInOutSummary();
+    const warehouseId =
+      req.params.warehouseId ||
+      req.query.warehouseId ||
+      (req.body && req.body.warehouseId) ||
+      undefined;
+    const data = await stockService.getStockInOutSummary({ warehouseId });
     return res.status(200).json({
       success: true,
       message: "Stock in/out summary fetched successfully",
@@ -286,9 +291,13 @@ exports.getStockInOutSummary = async (req, res) => {
     });
   } catch (error) {
     console.error("Error in getStockInOutSummary:", error);
-    return res.status(500).json({
+    const msg = error.message || "Internal Server Error";
+    let status = 500;
+    if (/^Invalid warehouseId/i.test(msg)) status = 400;
+    else if (/^Warehouse not found/i.test(msg)) status = 404;
+    return res.status(status).json({
       success: false,
-      message: error.message,
+      message: msg,
     });
   }
 };
