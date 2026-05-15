@@ -912,14 +912,16 @@ exports.getStockInOutSummary = async ({ warehouseId } = {}) => {
   };
 
   const match = { isActive: true };
+  let warehouseName = null;
   if (warehouseId) {
     if (!mongoose.Types.ObjectId.isValid(warehouseId)) {
       throw new Error("Invalid warehouseId");
     }
-    const warehouseExists = await Warehouse.exists({ _id: warehouseId });
-    if (!warehouseExists) {
+    const warehouse = await Warehouse.findOne({ _id: warehouseId });
+    if (!warehouse) {
       throw new Error(`Warehouse not found for id: ${warehouseId}`);
     }
+    warehouseName = warehouse.name;
     match.warehouse = new mongoose.Types.ObjectId(warehouseId);
   }
 
@@ -1009,6 +1011,7 @@ exports.getStockInOutSummary = async ({ warehouseId } = {}) => {
       generatedAt: now,
     },
     warehouseId: warehouseId || null,
+    warehouseName: warehouseName,
     day: { stockIn: t.dayIn || 0, stockOut: t.dayOut || 0 },
     month: { stockIn: t.monthIn || 0, stockOut: t.monthOut || 0 },
     year: { stockIn: t.yearIn || 0, stockOut: t.yearOut || 0 },
