@@ -64,34 +64,28 @@ exports.getAggregatedStock = async (page = 1, limit = 10, search = "") => {
   /* ===============================
      2️⃣ PRODUCTION STOCK (Scanned QR Codes only)
      =============================== */
-  const prodAgg = await QRCODE.aggregate([
-    { $unwind: "$qrCodes" },
-    {
-      $match: {
-        "qrCodes.factoryScan": true,
-        "qrCodes.article": { $nin: [null, ""] },
-      },
-    },
+const prodAgg = await Production.aggregate([
+    { $match: { isActive: { $ne: false } } },
+    { $unwind: "$category" },
+    { $match: { article: { $nin: [null, ""] } } },
     {
       $group: {
         _id: {
-          article: "$qrCodes.article",
-          categoryCode: "$qrCodes.categoryCode",
-          color: "$qrCodes.color",
-          size: "$qrCodes.size",
-          type: "$qrCodes.type",
-          quality: "$qrCodes.quality",
+          article: "$article",
+          categoryCode: "$category.categoryCode",
+          color: "$category.color",
+          size: "$category.size",
+          type: "$category.type",
+          quality: "$category.quality",
         },
-        productionQty: {
-          $sum: {
-            $convert: {
-              input: "$qrCodes.quantity",
-              to: "int",
-              onError: 1,
-              onNull: 1,
-            },
-          },
-        },
+        totalProduction: { $sum: "$productionQuantity" },
+        totalDispatched: { $sum: { $ifNull: ["$dispatchedQuantity", 0] } },
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        productionQty: { $subtract: ["$totalProduction", "$totalDispatched"] },
       },
     },
   ]);
