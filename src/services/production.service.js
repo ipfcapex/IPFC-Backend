@@ -161,7 +161,7 @@ const applyProductionToWishlists = async (productionData, currentAvailableQty = 
   }
 };
 
-// Scan Funtion is missing need to implement it
+// Create PRoduction
 exports.createProduct = async (data) => {
   try {
     //Step 1: Validate input
@@ -276,7 +276,6 @@ exports.createProduct = async (data) => {
       article: data.article,
       productionDate: data.productionDate,
       productionQuantity: data.productionQuantity,
-      status: "Ready",
       category: {
         categoryCode: data.categoryCode,
         color: data.color,
@@ -562,7 +561,7 @@ exports.deleteProduct = async (id) => {
   return deleted;
 };
 
-//Qr Scan Function
+//Proudtion Exit sacn 
 exports.scanProduct = async (qrImage) => {
   try {
     let QrCode;
@@ -608,7 +607,7 @@ exports.scanProduct = async (qrImage) => {
     if (qrIndex === -1) throw new Error("QR with the given qrId not found");
 
     if (qrDoc.qrCodes[qrIndex].factoryScan === true) {
-      throw new Error("QR already scanned at factory");
+      throw new Error("QR stock is already scanned at factory");
     }
 
     const updateField = {};
@@ -635,6 +634,90 @@ exports.scanProduct = async (qrImage) => {
         productionNo,
         qrId,
         dispatchedQty,
+        currentStatus: production.status,
+      },
+    };
+  } catch (err) {
+    console.error("scanProduct error:", err.message);
+    return {
+      error: err.message,
+    };
+  }
+};
+
+//Product Entry scan at factory
+exports.scanProducttoinstock = async (qrImage) => {
+  try {
+    let QrCode;
+    console.log("scanProduct service called with:", { qrImage });
+    if (qrImage) {
+      try {
+        const Qrid = await qrCodeModel.findOne(
+          { 'qrCodes.qrId': qrImage },        // Match inside array
+          { 'qrCodes.$': 1, factory_name: 1 } // Only return the matching qrCodes object
+        );
+        // console.log("Qrid",Qrid.qrCodes[0].qrData);
+        let qrString = Qrid.qrCodes[0].qrData;
+        qrData = await decodeBase64Qratproduction(qrString);
+      } catch (decodeErr) {
+        throw new Error("Failed to decode QR image: " + decodeErr.message);
+      }
+    }
+
+    // if (!qrData) throw new Error("QR data is required");
+
+    let parsedQr;
+    try {
+      parsedQr = typeof qrData === "string" ? JSON.parse(qrData) : qrData;
+    } catch (parseErr) {
+      throw new Error("QR data is not valid JSON: " + parseErr.message);
+    }
+
+    const { productionNo, qrId, quantity } = parsedQr;
+
+    if (!productionNo || !qrId) {
+      return {
+        error: "QR data must include both 'productionNo' and 'qrId'",
+      };
+    }
+
+    const qrDoc = await qrCodeModel.findOne({ productionNo });
+    if (!qrDoc)
+      throw new Error(
+        "QR document not found for productionNo: " + productionNo
+      );
+
+    const qrIndex = qrDoc.qrCodes.findIndex((qr) => qr.qrId === qrId);
+    if (qrIndex === -1) throw new Error("QR with the given qrId not found");
+
+    if (qrDoc.qrCodes[qrIndex].factoryinScan === true) {
+      throw new Error("QR already scanned at factory");
+    }
+
+    const updateField = {};
+    updateField[`qrCodes.${qrIndex}.factoryinScan`] = true;
+    await qrCodeModel.updateOne({ productionNo }, { $set: updateField });
+
+    const production = await Production.findOne({ productionNo });
+    if (!production) throw new Error("Production not found for this QR");
+
+    const stockinQty = quantity || 1;
+    production.stockinQuantity =
+      (production.stockinQuantity || 0) + stockinQty;
+
+    production.status =
+      production.stockinQuantity >= production.productionQuantity
+        ? "Arrived at factory"
+        : "Ready";
+
+    await production.save();
+
+    return {
+      message: "QR scanned successfully Stock QTy added",
+      scannedQr: {
+        productionNo,
+        qrId,
+        stockinQty,
         currentStatus: production.status,
       },
     };

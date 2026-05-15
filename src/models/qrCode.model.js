@@ -18,6 +18,7 @@ const qrCodeEntrySchema = new mongoose.Schema({
   quality: { type: String, required: true },
   quantity: { type: String, default: "1" },
   factoryScan:{type: Boolean, default: false},
+  factoryinScan:{type: Boolean, default: false},
   qrData: { type: String, required: true }, 
   qrId: {
     type: String,

@@ -8,7 +8,7 @@ const qrCodeEntrySchema = new mongoose.Schema({
   size: { type: String, required: true },
   type: { type: String, required: true },
   quality: { type: String, required: true },
-  image: { type: [String]},
+  image: { type: [String] },
 }, { _id: false });
 
 const productSchema = new mongoose.Schema(
@@ -20,7 +20,7 @@ const productSchema = new mongoose.Schema(
     },
     productionNo: {
       type: String,
-      required: true, 
+      required: true,
     },
     article: {
       type: String,
@@ -38,13 +38,14 @@ const productSchema = new mongoose.Schema(
     dispatchedQuantity: {
       type: Number
     },
+    stockinQuantity: { type: Number },
     status: {
       type: String,
-      enum: ["Ready", "Dispatch from Factory","Partially Dispatched", "Arrived at Warehouse"],
-      default: "Ready", 
+      enum: ["Ready","Arrived at factory", "Dispatch from Factory", "Partially Dispatched", "Arrived at Warehouse"],
+      default: "Ready",
     },
     category: {
-      type: mongoose.Schema.Types.Mixed, 
+      type: mongoose.Schema.Types.Mixed,
     },
     isActive: {
       type: Boolean,
