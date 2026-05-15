@@ -22,5 +22,6 @@ router.get('/factory/:factory', requireAuth, productionController.getStockByFact
 router.put('/:id', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager'), validateProduct, handleValidation, productionController.updateProduct);
 router.delete('/:id', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager'), productionController.deleteProduct);
 router.post('/qrscan', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager'),productionController.TrackProductionbyQr);
+router.post('/instock-qrscan', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager'),productionController.TrackProductionbyQrttostocin);
 
 module.exports = router;

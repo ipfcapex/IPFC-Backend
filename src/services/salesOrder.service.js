@@ -78,7 +78,7 @@ const prodAgg = await Production.aggregate([
           type: "$category.type",
           quality: "$category.quality",
         },
-        totalProduction: { $sum: "$productionQuantity" },
+        totalProduction: { $sum: { $ifNull: ["$stockinQuantity", 0] } },
         totalDispatched: { $sum: { $ifNull: ["$dispatchedQuantity", 0] } },
       },
     },
@@ -88,6 +88,7 @@ const prodAgg = await Production.aggregate([
         productionQty: { $subtract: ["$totalProduction", "$totalDispatched"] },
       },
     },
+    { $match: { productionQty: { $gt: 0 } } },
   ]);
 
   /* ===============================

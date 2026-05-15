@@ -291,3 +291,28 @@ exports.TrackProductionbyQr = async (req, res) => {
     return res.status(500).json({ error: "Internal server error" });
   }
 };
+
+exports.TrackProductionbyQrttostocin = async (req, res) => {
+  try {
+    if (!req.body) {
+      return res.status(400).json({ error: "Missing request body" });
+    }
+
+    const qrImage = req.body.qrImage;
+    console.log("QR:", req.body)
+    const result = await productionService.scanProducttoinstock(qrImage );
+    
+    if (result.error) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    return res.status(200).json({
+      message: "QR scanned successfully",
+      data: result,
+    });
+
+  } catch (error) {
+    console.error("Error in TrackProductionbyQr:", error.message);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
