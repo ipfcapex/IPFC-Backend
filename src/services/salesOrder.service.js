@@ -59,6 +59,7 @@ exports.getAggregatedStock = async (page = 1, limit = 10, search = "") => {
         },
       },
     },
+    { $match: { stockQty: { $gt: 0 } } },
   ]);
 
   /* ===============================
