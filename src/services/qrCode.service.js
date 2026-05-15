@@ -573,7 +573,90 @@ exports.stockTransferWithinWarehouses = async ({
   }
 }
 
-//get Internal tranfer Qr code 
+// Get all factory-scanned QR codes from QR model, grouped by productionNo.
+// Pagination is applied at the productionNo level (e.g. 10 PNs per page).
+// Optional filter: productionNo (returns a single group)
+exports.getAllFactoryScannedQrCodes = async ({ productionNo, page = 1, limit = 10 } = {}) => {
+  page = Number(page) || 1;
+  limit = Number(limit) || 10;
+  const skip = (page - 1) * limit;
+
+  const docMatch = productionNo ? { productionNo } : {};
+
+  const basePipeline = [
+    { $match: docMatch },
+    { $unwind: "$qrCodes" },
+    { $match: { "qrCodes.factoryScan": true } },
+    {
+      $group: {
+        _id: "$productionNo",
+        productionNo: { $first: "$productionNo" },
+        factory: { $first: "$factory" },
+        factory_name: { $first: "$factory_name" },
+        warehouses: { $addToSet: "$warehouse" },
+        status: { $first: "$status" },
+        firstCreatedAt: { $min: "$createdAt" },
+        qrCodes: { $push: "$qrCodes" },
+        totalQrCodes: { $sum: 1 },
+      },
+    },
+    { $sort: { firstCreatedAt: 1 } },
+  ];
+
+  const [countRes] = await QRCODE.aggregate([
+    ...basePipeline,
+    { $count: "total" },
+  ]);
+  const totalItems = countRes ? countRes.total : 0;
+
+  const data = await QRCODE.aggregate([
+    ...basePipeline,
+    { $skip: skip },
+    { $limit: limit },
+    {
+      $lookup: {
+        from: "warehouses",
+        localField: "warehouses",
+        foreignField: "_id",
+        as: "warehouseDetails",
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        productionNo: 1,
+        factory: 1,
+        factory_name: 1,
+        warehouses: {
+          $map: {
+            input: "$warehouseDetails",
+            as: "w",
+            in: { _id: "$$w._id", name: "$$w.name" },
+          },
+        },
+        status: 1,
+        createdAt: "$firstCreatedAt",
+        totalQrCodes: 1,
+        qrCodes: 1,
+      },
+    },
+  ]);
+
+  const totalPages = Math.ceil(totalItems / limit) || 0;
+
+  return {
+    success: true,
+    data,
+    pagination: {
+      currentPage: page,
+      totalPages,
+      totalItems,
+      limit,
+    },
+  };
+};
+
+//get Internal tranfer Qr code
 exports.getInternalTransfersByTime = async (page = 1, limit = 10, search = "") => {
   try {
     page = Number(page);
