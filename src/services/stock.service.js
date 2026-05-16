@@ -824,17 +824,37 @@ exports.getstockScanedbyWM = async (id, article, ScanByorder, warehouse, quantit
   const order = await SellOrder.findById(id);
   if (!order) throw new Error("Order not found");
 
-  // 2️ Find the article inside the order
-  const item = order.items.find(i => i.article.toString() === article.toString());
-  if (!item) throw new Error("Article not found in this order");
+  // 2️ Find the first article+warehouse pair that is still UNSCANNED.
+  // Multiple order items can share the same article (different specs), and
+  // the frontend only sends `article` + `warehouse`, so we disambiguate by
+  // picking the next unscanned warehouse row.
+  let item = null;
+  let wh = null;
+  for (const it of order.items) {
+    if (it.article.toString() !== article.toString()) continue;
+    const candidate = it.warehouses.find(
+      w =>
+        w.warehouse.toString() === warehouse.toString() &&
+        w.ScanByorder !== "SCANNED"
+    );
+    if (candidate) {
+      item = it;
+      wh = candidate;
+      break;
+    }
+  }
 
-  // 3️Find the warehouse inside the article
-  const wh = item.warehouses.find(w => w.warehouse.toString() === warehouse.toString());
-  if (!wh) throw new Error("Warehouse not found for this article");
+  if (!item || !wh) {
+    throw new Error(
+      "Article/warehouse not found in this order, or already scanned."
+    );
+  }
 
   if (quantity !== wh.quantity) {
-  throw new Error(`Input quantity (${quantity}) must be equal to available quantity (${wh.quantity})`);
-}
+    throw new Error(
+      `Input quantity (${quantity}) must be equal to available quantity (${wh.quantity})`
+    );
+  }
 
   // if (wh.ScanByorder === "SCANNED") {
   //   throw new Error("This warehouse item has already been scanned and cannot be updated.");
