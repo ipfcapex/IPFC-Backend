@@ -8,4 +8,5 @@ router.post('/add-qr-detais', requireAuth, requireAdminRoles('Administrator','Ad
 router.post('/stockTransfer',requireAuth, qrController.transferStock);
 router.get('/stock-Transfer',requireAuth, qrController.getInternaltransfers)
 router.get('/factory-scanned', requireAuth, qrController.getAllFactoryScannedQrCodes);
+router.post('/return-qr', requireAuth, requireAdminRoles('Administrator','Admin','Inventory Manager'), qrController.generateReturnQr);
 module.exports = router;

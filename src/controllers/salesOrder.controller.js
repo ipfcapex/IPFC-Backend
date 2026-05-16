@@ -505,3 +505,22 @@ exports.deletessItem = async (req, res) => {
     });
   }
 };
+
+exports.reverseDelivery = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await orderService.reverseDelivery(id, req.body);
+
+    return res.status(200).json({
+      success: true,
+      message: "Delivery reversed successfully",
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error in reverseDelivery:", error.message);
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};

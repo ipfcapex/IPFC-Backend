@@ -28,5 +28,8 @@ router.get("/order/by-salesperson", salesOrderController.getAllbySalesperson);
 
 router.delete('/order-delete/:id', salesOrderController.deletessItem);
 
+//Reverse delivery (return) for a delivered order
+router.post('/reverse-delivery/:id', salesOrderController.reverseDelivery);
+
 
 module.exports = router;

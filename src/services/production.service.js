@@ -246,6 +246,7 @@ exports.createProduct = async (data) => {
     // 🧩 Step 7: Generate next production number
     const getNextProductionNumber = async () => {
       const last = await Production.aggregate([
+        { $match: { productionNo: { $regex: /^PN_\d+$/ } } },
         {
           $addFields: {
             numericNo: {
@@ -367,15 +368,13 @@ exports.getproductionDatawithoutQR = async (page = 1, limit = 10, search = "") =
   const limitNum = parseInt(limit, 10) || 10;
   const skip = (pageNum - 1) * limitNum;
 
-  // Get all productionNos that already have QR
+  // Get all productionNos that already have QR (covers both PN_* and RPN_*)
   const qrProductions = await QRCODE.find().distinct("productionNo");
 
-  // Always start with base query
   const query = {
     productionNo: { $nin: qrProductions || [] },
   };
 
-  // If search provided, merge with $or
   if (search) {
     query.$or = [
       { productionNo: { $regex: search, $options: "i" } },
