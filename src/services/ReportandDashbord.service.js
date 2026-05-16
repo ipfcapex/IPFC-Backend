@@ -303,7 +303,7 @@ exports.getTotalProduction = async () => {
 
 //Inventory summery
 exports.getTotalInventory = async () => {
-  // 1. Get Production totals
+  // 1. Get Production totals (stock-in minus dispatched from production)
   const summaryProduction = await Production.aggregate([
     { $match: { isActive: true } },
     {
@@ -311,15 +311,9 @@ exports.getTotalInventory = async () => {
         _id: null,
         productionStock: {
           $sum: {
-            $cond: [
-              { $eq: ["$status", "ready"] },
-              "$productionQuantity",
-              {
-                $subtract: [
-                  "$productionQuantity",
-                  { $ifNull: ["$dispatchedQuantity", 0] }
-                ]
-              }
+            $subtract: [
+              { $ifNull: ["$stockinQuantity", 0] },
+              { $ifNull: ["$dispatchedQuantity", 0] }
             ]
           }
         }
@@ -328,19 +322,28 @@ exports.getTotalInventory = async () => {
     { $project: { _id: 0, productionStock: 1 } }
   ]);
   console.log("production", summaryProduction)
-  // 2. Get Stock totals
+  // 2. Get Stock totals (stock still in warehouse = total - dispatched)
+
   const summaryStock = await Stock.aggregate([
     { $match: { isActive: true } },
     {
       $group: {
         _id: null,
-        stockStock: { $sum: { $subtract: ["$toatalQuantity", "$dispatchStock"] } },
-        deliverables: { $sum: "$dispatchStock" },
+        stockStock: {
+          $sum: {
+            $subtract: [
+              { $ifNull: ["$toatalQuantity", 0] },
+              { $ifNull: ["$dispatchStock", 0] }
+            ]
+          }
+        },
+        deliverables: { $sum: { $ifNull: ["$dispatchStock", 0] } },
       },
     },
     { $project: { _id: 0, stockStock: 1, deliverables: 1 } },
   ]);
   console.log("s stoc", summaryStock)
+
   const approvedOrdersSummary = await SellOrder.aggregate([
     {
       $match: {
@@ -588,7 +591,7 @@ exports.getMonthlyProductionTotals = async () => {
             year: { $year: "$createdAt" },
             month: { $month: "$createdAt" },
           },
-          totalProduction: { $sum: "$productionQuantity" },
+          totalProduction: { $sum: "$stockinQuantity" },
         },
       },
 

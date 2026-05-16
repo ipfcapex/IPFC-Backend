@@ -695,12 +695,19 @@ exports.stockTransferWithinWarehouses = async ({
 // Get all factory-scanned QR codes from QR model, grouped by productionNo.
 // Pagination is applied at the productionNo level (e.g. 10 PNs per page).
 // Optional filter: productionNo (returns a single group)
-exports.getAllFactoryScannedQrCodes = async ({ productionNo, page = 1, limit = 10 } = {}) => {
+exports.getAllFactoryScannedQrCodes = async ({ productionNo, type, page = 1, limit = 10 } = {}) => {
   page = Number(page) || 1;
   limit = Number(limit) || 10;
   const skip = (page - 1) * limit;
 
-  const docMatch = productionNo ? { productionNo } : {};
+  const docMatch = {};
+  if (productionNo) {
+    docMatch.productionNo = productionNo;
+  } else if (type === "RPN") {
+    docMatch.productionNo = { $regex: "^RPN_", $options: "i" };
+  } else if (type === "PN") {
+    docMatch.productionNo = { $regex: "^PN_", $options: "i" };
+  }
 
   const basePipeline = [
     { $match: docMatch },

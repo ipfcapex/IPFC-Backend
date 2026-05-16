@@ -260,8 +260,8 @@ exports.getStockByWarehouseAndFactory = async (page = 1, limit = 10, search = ""
     warehouse: "N/A",
     stockAtFactory:
       p.dispatchedQuantity != null && p.dispatchedQuantity !== undefined
-        ? Math.max(p.productionQuantity - p.dispatchedQuantity, 0)
-        : p.productionQuantity,
+        ? Math.max(p.stockinQuantity - p.dispatchedQuantity, 0)
+        : p.stockinQuantity,
     stockAtWarehouse: 0,
   }));
 
@@ -548,8 +548,8 @@ exports.getStockByWarehouseAndFactory2 = async (page = 1, limit = 5, search = ""
     warehouse: "N/A",
     stockAtFactory:
       p.dispatchedQuantity != null && p.dispatchedQuantity !== undefined
-        ? Math.max(p.productionQuantity - p.dispatchedQuantity, 0)
-        : p.productionQuantity,
+        ? Math.max(p.stockinQuantity - p.dispatchedQuantity, 0)
+        : p.stockinQuantity,
     stockAtWarehouse: 0,
   }));
 
