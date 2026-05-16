@@ -106,11 +106,13 @@ exports.transferStock = [
 exports.getAllFactoryScannedQrCodes = async (req, res) => {
   try {
     const productionNo = req.query.productionNo || undefined;
+    const type = req.query.type || undefined;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
 
     const result = await qrService.getAllFactoryScannedQrCodes({
       productionNo,
+      type,
       page,
       limit,
     });
