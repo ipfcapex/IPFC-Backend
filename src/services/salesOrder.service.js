@@ -7,6 +7,7 @@ const { Cart } = require("../models")
 const { Schemes } = require("../models")
 const { Wishlist } = require("../models")
 const QRCODE = require("../models/qrCode.model");
+const qrCodeService = require("./qrCode.service");
 const { sendNotification } = require("./notificationService");
 
 
@@ -998,4 +999,146 @@ exports.Deleteitems = async (id) => {
     { isActive: false },
     { new: true } 
   );
+};
+
+//Reverce Deliver Process
+exports.reverseDelivery = async (id, payload) => {
+  const {
+    article,
+    categoryCode,
+    color,
+    size,
+    type,
+    quality,
+    quantity: returnQuantity,
+    factory,
+    productionDate,
+    reason,
+  } = payload || {};
+
+  if (!article || !categoryCode || !color || !size || !type || !quality) {
+    throw new Error(
+      "Article details are incomplete. Provide article, categoryCode, color, size, type and quality."
+    );
+  }
+  if (!returnQuantity || typeof returnQuantity !== "number" || returnQuantity <= 0) {
+    throw new Error("Return quantity must be a positive number");
+  }
+  if (!factory) {
+    throw new Error("Factory is required to create return production");
+  }
+
+  const order = await SellOrder.findById(id);
+  if (!order) {
+    throw new Error("Order not found");
+  }
+  if (order.deliveryStatus !== "DELIVERED") {
+    throw new Error("Only orders with DELIVERED status can be reversed");
+  }
+
+  const target = normalizeKey({ article, categoryCode, color, size, type, quality });
+  const itemIndex = order.items.findIndex((it) => normalizeKey(it) === target);
+  if (itemIndex === -1) {
+    throw new Error("Matching article not found in this order");
+  }
+
+  const item = order.items[itemIndex];
+  const orderedQty = Number(item.quantity) || 0;
+  if (returnQuantity > orderedQty) {
+    throw new Error(
+      `Return quantity (${returnQuantity}) cannot exceed order quantity (${orderedQty})`
+    );
+  }
+
+  order.items[itemIndex].quantity = orderedQty - returnQuantity;
+
+  order.reverceHistory.push({
+    status: "RETURN",
+    reason,
+    article,
+    categoryCode,
+    color,
+    size,
+    type,
+    quality,
+    quantity: returnQuantity,
+  });
+
+  await order.save();
+
+  // Resolve product image for the new Production
+  const productByArticle = await Product.findOne({ article });
+  let selectedImage = null;
+  if (productByArticle && Array.isArray(productByArticle.category)) {
+    const matchedCategory = productByArticle.category.find(
+      (cat) =>
+        String(cat.categoryCode) === String(categoryCode) &&
+        String(cat.color).toLowerCase() === String(color).toLowerCase() &&
+        String(cat.size).toLowerCase() === String(size).toLowerCase()
+    );
+    if (matchedCategory && Array.isArray(matchedCategory.image) && matchedCategory.image.length > 0) {
+      selectedImage = matchedCategory.image[0];
+    }
+  }
+
+  // Generate next RPN_XX (RPN_01, RPN_02, ... padded to 2 digits, grows past 99)
+  const getNextReturnProductionNumber = async () => {
+    const last = await Production.aggregate([
+      { $match: { productionNo: { $regex: /^RPN_/ } } },
+      {
+        $addFields: {
+          numericNo: {
+            $toInt: {
+              $replaceOne: { input: "$productionNo", find: "RPN_", replacement: "" },
+            },
+          },
+        },
+      },
+      { $sort: { numericNo: -1 } },
+      { $limit: 1 },
+    ]);
+    const next = last.length ? last[0].numericNo + 1 : 1;
+    return `RPN_${String(next).padStart(2, "0")}`;
+  };
+
+  const productionNo = await getNextReturnProductionNumber();
+
+  const production = await Production.create({
+    factory,
+    productionNo,
+    article,
+    productionDate: productionDate || new Date(),
+    productionQuantity: returnQuantity,
+    category: {
+      categoryCode,
+      color,
+      size,
+      type,
+      quality,
+      image: selectedImage,
+    },
+  });
+
+  // Generate QR + bypass factory scans so warehouse can scan directly
+  const warehouseId =
+    Array.isArray(item.warehouses) && item.warehouses[0]?.warehouse
+      ? item.warehouses[0].warehouse
+      : null;
+  if (!warehouseId) {
+    throw new Error(
+      "Cannot determine warehouse for return QR. Order item has no warehouse association."
+    );
+  }
+
+  const { qrDoc, production: updatedProduction } =
+    await qrCodeService.generateReturnQrAndBypassFactoryScan({
+      factory,
+      productionNo,
+      warehouse: warehouseId,
+      article,
+      category: { categoryCode, color, size, type, quality },
+      quantity: returnQuantity,
+    });
+
+  return { order, production: updatedProduction, qrDoc };
 };

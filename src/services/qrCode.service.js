@@ -5,6 +5,7 @@ const Product = require("../models/production.model");
 const { log } = require("winston");
 const { v4: uuidv4 } = require("uuid"); // for unique QR ID
 const { Warehouse } = require("../models");
+const { Factory } = require("../models");
 const { sendNotification } = require("./notificationService");
 const { User } = require("../models");
 const { Stock } = require("../models");
@@ -277,6 +278,124 @@ exports.generateQrCodesByArticle = async ({
     console.error("QR generation error:", error);
     throw error;
   }
+};
+
+// Generate QR codes for a Return Production (RPN_xx) and bypass the
+// factory in-scan + factory dispatch-scan stages so the goods can be
+// scanned directly at the warehouse. The Production's stockinQuantity,
+// dispatchedQuantity and status are updated to reflect that bypass.
+exports.generateReturnQrAndBypassFactoryScan = async ({
+  factory,
+  productionNo,
+  warehouse,
+  article,
+  category,
+  quantity,
+}) => {
+  if (!factory) throw new Error("factory is required");
+  if (!productionNo) throw new Error("productionNo is required");
+  if (!warehouse) throw new Error("warehouse is required");
+  if (!article) throw new Error("article is required");
+  if (!category) throw new Error("category is required");
+  const qty = Number(quantity);
+  if (!qty || qty <= 0) throw new Error("quantity must be a positive number");
+
+  const existingQR = await QRCODE.findOne({ productionNo });
+  if (existingQR) {
+    throw new Error(`QR already generated for productionNo: ${productionNo}`);
+  }
+
+  const [factoryDoc, warehouseDoc, production] = await Promise.all([
+    Factory.findById(factory),
+    Warehouse.findById(warehouse),
+    Product.findOne({ productionNo }),
+  ]);
+  if (!factoryDoc) throw new Error("Factory not found");
+  if (!warehouseDoc) throw new Error("Warehouse not found");
+  if (!production) throw new Error("Production not found for this productionNo");
+
+  const categoryData = {
+    categoryCode: category.categoryCode,
+    color: category.color,
+    size: category.size,
+    type: category.type,
+    quality: category.quality,
+  };
+
+  const allQrCodes = [];
+  for (let i = 0; i < qty; i++) {
+    const qrId = "QR-" + uuidv4();
+    const qrPayload = {
+      article,
+      factory_name: factoryDoc.name,
+      warehouse: warehouseDoc._id,
+      warehouseName: warehouseDoc.name,
+      productionNo,
+      serial: i + 1,
+      qrId,
+      quantity: 1,
+      category: categoryData,
+      factoryScan: true,
+      factoryinScan: true,
+    };
+    const qrBase64 = await QRCode.toDataURL(JSON.stringify(qrPayload));
+
+    allQrCodes.push({
+      article,
+      categoryCode: categoryData.categoryCode || "NA",
+      color: categoryData.color || "NA",
+      size: categoryData.size || "NA",
+      type: categoryData.type || "NA",
+      quality: categoryData.quality || "NA",
+      quantity: "1",
+      qrId,
+      qrData: qrBase64,
+      factoryScan: true,
+      factoryinScan: true,
+    });
+  }
+
+  const qrDoc = await QRCODE.create({
+    factory,
+    factory_name: factoryDoc.name,
+    productionNo,
+    warehouse,
+    products: [article],
+    status: "Dispatch",
+    category: [categoryData],
+    qrCodes: allQrCodes,
+  });
+
+  // Bypass factory scans on the Production itself
+  production.stockinQuantity = qty;
+  production.dispatchedQuantity = qty;
+  production.status = "Dispatch from Factory";
+  await production.save();
+
+  // Notify the warehouse manager that goods are ready to be scanned in
+  try {
+    const warehouseManager = await User.findOne({
+      role: "Warehouse Manager",
+      warehouses: warehouse,
+      isActive: true,
+    });
+    if (warehouseManager) {
+      sendNotification("qrgeneratedRequest", {
+        message: `Return QR (${productionNo}) ready at warehouse: ${warehouseDoc.name}. Factory scan bypassed.`,
+        recipient: {
+          id: warehouseManager._id,
+          name: warehouseManager.name,
+          email: warehouseManager.email,
+          phone: warehouseManager.phone,
+        },
+        data: qrDoc,
+      });
+    }
+  } catch (e) {
+    console.error("Return QR notification failed:", e.message);
+  }
+
+  return { qrDoc, production };
 };
 
 exports.getQrCodes = async (page = 1, limit = 10) => {

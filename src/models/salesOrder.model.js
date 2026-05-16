@@ -122,6 +122,49 @@ const Wishlistitems = new mongoose.Schema(
     _id: false,
   }
 );
+const reverceHistorySchema = new mongoose.Schema(
+  {
+    status: {
+      type: String,
+      enum: ["NOACTION", "RETURN"],
+      default: "NOACTION",
+    },
+    reason: {
+      type: String,
+    },
+    article: {
+      type: mongoose.Schema.Types.Mixed,
+      required: true,
+    },
+    categoryCode: {
+      type: mongoose.Schema.Types.Mixed,
+      required: true,
+    },
+    color: {
+      type: String,
+      required: true,
+    },
+    size: {
+      type: String,
+      required: true,
+    },
+    type: {
+      type: String,
+      required: true,
+    },
+    quality: {
+      type: String,
+      required: true,
+    },
+    quantity: {
+      type: Number,
+      default: 0,
+    },
+  },
+  {
+    _id: false,timestamps: true,
+  }
+);
 const orderSchema = new mongoose.Schema(
   {
     salesOrderNo: {
@@ -176,6 +219,7 @@ const orderSchema = new mongoose.Schema(
       enum: ["PENDING", "DELIVERED", "HOLD"],
       default: "PENDING",
     },
+    reverceHistory: [reverceHistorySchema],
     ScannedByWarehouseManager: {
     type: String,
     enum: ["SCANNED", "UNSCANNED"],

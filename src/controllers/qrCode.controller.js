@@ -125,6 +125,48 @@ exports.getAllFactoryScannedQrCodes = async (req, res) => {
   }
 };
 
+exports.generateReturnQr = async (req, res) => {
+  try {
+    const {
+      factory,
+      productionNo,
+      warehouse,
+      article,
+      category,
+      quantity,
+    } = req.body;
+
+    if (!factory || !productionNo || !warehouse || !article || !category || !quantity) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "factory, productionNo, warehouse, article, category and quantity are required",
+      });
+    }
+
+    const result = await qrService.generateReturnQrAndBypassFactoryScan({
+      factory,
+      productionNo,
+      warehouse,
+      article,
+      category,
+      quantity,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Return QR generated and factory scan bypassed",
+      data: result,
+    });
+  } catch (error) {
+    console.error("generateReturnQr error:", error.message);
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 exports.getInternaltransfers = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
