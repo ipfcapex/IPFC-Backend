@@ -24,6 +24,8 @@ const qrCodeEntrySchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  ordNumScanFor: { type: String },
+  lastScanAt: { type: Date }
 }, { _id: false });
 
 const qrCodeSchema = new mongoose.Schema({

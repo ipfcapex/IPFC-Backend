@@ -419,64 +419,88 @@ exports.softDeleteStock = async (id) => {
 };
 
 //QR code scanning and dispatching
-exports.scanAndDispatch = async (req, res) => {
-  try {
-    const { qrData } = req.body;
+exports.scanAndDispatch = async (req) => {
+  const { qrData, ordNumScanFor } = req.body;
 
-    // ✅ Populate factory & warehouse to get their names
-    const stock = await Stock.findOne({
-      "stockdata.qrData": qrData,
-    })
-      .populate("factory", "name")
-      .populate("warehouse", "name");
+  // ✅ Populate factory & warehouse to get their names
+  const stock = await Stock.findOne({
+    "stockdata.qrData": qrData,
+  })
+    .populate("factory", "name")
+    .populate("warehouse", "name");
 
-    if (!stock) {
-      return res.status(400).json({
-        success: false,
-        message: "QR code invalid or already dispatched",
-      });
-    }
-
-    // Locate stock item that is not yet dispatched
-    const stockItem = stock.stockdata.find(
-      (s) => s.qrData === qrData && s.dispatched === false
-    );
-
-    if (!stockItem) {
-      return res.status(400).json({
-        success: false,
-        message: "Stock item already dispatched",
-      });
-    }
-
-    // ✅ Mark item as dispatched
-    stockItem.dispatched = true;
-    stock.dispatchStock += 1;
-    stockItem.dispatchAt = new Date();
-
-    await stock.save();
-
-    return res.json({
-      success: true,
-      message: "Stock dispatched successfully",
-      data: {
-        factory: stock.factory?.name || "N/A",
-        warehouse: stock.warehouse?.name || "N/A",
-        article: stockItem.article,
-        categoryCode: stockItem.categoryCode,
-        color: stockItem.color,
-        size: stockItem.size,
-        type: stockItem.type,
-        quality: stockItem.quality,
-        quantity: stockItem.quantity,
-        qrData: stockItem.qrData,
-        dispatched: stockItem.dispatched,
-        dispatchAt: stockItem.dispatchAt,
-      },
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+  if (!stock) {
+    throw new Error("QR code invalid or already dispatched");
   }
+
+  // Locate stock item that is not yet dispatched
+  const stockItem = stock.stockdata.find(
+    (s) => s.qrData === qrData && s.dispatched === false
+  );
+
+  if (!stockItem) {
+    throw new Error("Stock item already dispatched");
+  }
+
+  // ✅ Find the order this scan is for and enforce the dispatch cap
+  const order = await SellOrder.findOne({ salesOrderNo: ordNumScanFor });
+  if (!order) {
+    throw new Error(`Order ${ordNumScanFor} not found`);
+  }
+
+  // Total quantity ordered across all items = max allowed scans
+  const totalOrderedQty = order.items.reduce(
+    (sum, it) => sum + (Number(it.quantity) || 0),
+    0
+  );
+
+  if ((order.numOfDispatchedQty || 0) >= totalOrderedQty) {
+    throw new Error(
+      `All ${totalOrderedQty} units for order ${ordNumScanFor} are already scanned. Cannot scan more.`
+    );
+  }
+
+  // ✅ Mark item as dispatched
+  const scannedAt = new Date();
+  stockItem.dispatched = true;
+  stock.dispatchStock += 1;
+  stockItem.dispatchAt = scannedAt;
+  stockItem.ordNumScanFor = ordNumScanFor;
+
+  await stock.save();
+
+  // ✅ Record which order this QR was scanned for, and when, on the QR doc
+  await qrCodeModel.updateOne(
+    { "qrCodes.qrId": stockItem.qrId },
+    {
+      $set: {
+        "qrCodes.$.ordNumScanFor": ordNumScanFor,
+        "qrCodes.$.lastScanAt": scannedAt,
+      },
+    }
+  );
+
+  // ✅ One QR scanned = +1 to the order's dispatched quantity
+  order.numOfDispatchedQty = (order.numOfDispatchedQty || 0) + 1;
+  await order.save();
+
+  return {
+    factory: stock.factory?.name || "N/A",
+    warehouse: stock.warehouse?.name || "N/A",
+    article: stockItem.article,
+    categoryCode: stockItem.categoryCode,
+    color: stockItem.color,
+    size: stockItem.size,
+    type: stockItem.type,
+    quality: stockItem.quality,
+    quantity: stockItem.quantity,
+    qrData: stockItem.qrData,
+    dispatched: stockItem.dispatched,
+    dispatchAt: stockItem.dispatchAt,
+    ordNumScanFor: ordNumScanFor,
+    lastScanAt: scannedAt,
+    numOfDispatchedQty: order.numOfDispatchedQty,
+  };
 };
 
 //Get Stock by Prefer Warehouse with pagination

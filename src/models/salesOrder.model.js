@@ -160,6 +160,10 @@ const reverceHistorySchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    numOfDispatchedQty: {
+      type: Number,
+      default: 0,
+    }
   },
   {
     _id: false,timestamps: true,
@@ -227,6 +231,7 @@ const orderSchema = new mongoose.Schema(
     },
     scheme: { type: mongoose.Schema.Types.ObjectId, ref: "Schemes"},
     isTallyCreated: { type: Boolean, default: false },
+    numOfDispatchedQty: { type: Number, default: 0 },
   },
   {
     timestamps: true,

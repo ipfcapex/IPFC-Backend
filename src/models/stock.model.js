@@ -12,7 +12,9 @@ const qrCodeEntrySchema = new mongoose.Schema({
   qrData: { type: String}, // Base64 image,
   dispatched: { type: Boolean, default: false }, 
   stockinAt: { type: Date, default: Date.now },
-  dispatchAt: { type: Date } // only set when dispatched is true
+  dispatchAt: { type: Date }, // only set when dispatched is true
+  ordNumScanFor: { type: String },
+  lastScanAt: { type: Date }
 
 }, { _id: false});
 
