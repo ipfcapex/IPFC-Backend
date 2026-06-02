@@ -157,6 +157,16 @@ exports.getOrderDatabyWH = async (req, res) => {
     // Flatten the items
     const flattened = [];
     orders.forEach(order => {
+      // Total ordered quantity for the whole order = scan cap denominator
+      const orderTotalQty = order.items.reduce(
+        (sum, it) => sum + (Number(it.quantity) || 0),
+        0
+      );
+      const scannedQty = Number(order.numOfDispatchedQty) || 0;
+      const scanPercent =
+        orderTotalQty > 0
+          ? Math.min(100, Math.round((scannedQty / orderTotalQty) * 100))
+          : 0;
       order.items.forEach(item => {
         item.warehouses.forEach(wh => {
           const whId = wh.warehouse?._id?.toString() || wh.warehouse?.toString();
@@ -175,7 +185,10 @@ exports.getOrderDatabyWH = async (req, res) => {
               quality: item.quality,
               warehouse: wh.warehouse,
               quantity: wh.quantity,
-              ScanByorder: wh.ScanByorder
+              ScanByorder: wh.ScanByorder,
+              numOfDispatchedQty: scannedQty,
+              orderTotalQty,
+              scanPercent
             });
           }
         });
