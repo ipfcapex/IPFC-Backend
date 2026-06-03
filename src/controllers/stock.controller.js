@@ -222,9 +222,14 @@ exports.addDeliveryRecordss = async (req, res) => {
 
     const updatedOrder = await stockService.addDeliveryRecord(id, deliveryStatus);
 
+    const statusMessages = {
+      DELIVERED: "Order marked as delivered successfully",
+      PENDING: "Order marked as pending successfully",
+    };
+
     return res.status(200).json({
       success: true,
-      message: "Delivery status updated successfully",
+      message: statusMessages[deliveryStatus] || "Delivery status updated successfully",
       data: updatedOrder,
     });
   } catch (error) {

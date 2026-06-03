@@ -107,10 +107,21 @@ exports.getOrderDatabyWH = async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 10;
     const skip = (page - 1) * limit;
 
+    // Dispatch Scanner passes ?pending=true to get only orders still pending
+    // dispatch (delivered, not yet scanned by the warehouse manager). The Stock
+    // Verify table omits the flag and keeps seeing every order/status.
+    const pendingOnly = req.query.pending === "true" || req.query.pending === "1";
+
     // Build base query
     const query = {
       "items.warehouses.warehouse": { $in: assignedWarehouses }
     };
+
+    if (pendingOnly) {
+      query.isActive = true;
+      query.deliveryStatus = "DELIVERED";
+      query.ScannedByWarehouseManager = { $ne: "SCANNED" };
+    }
 
     // Search handling
   if (req.query.search && req.query.search.trim() !== "") {
@@ -157,16 +168,28 @@ exports.getOrderDatabyWH = async (req, res) => {
     // Flatten the items
     const flattened = [];
     orders.forEach(order => {
-      // Total ordered quantity for the whole order = scan cap denominator
-      const orderTotalQty = order.items.reduce(
-        (sum, it) => sum + (Number(it.quantity) || 0),
-        0
-      );
+      // Total ordered quantity for the whole order = scan cap denominator.
+      // Fall back to the sum of warehouse allocations when item.quantity is
+      // missing/zero (some records only carry the qty on the warehouse sub-doc).
+      const orderTotalQty = order.items.reduce((sum, it) => {
+        const itemQty = Number(it.quantity) || 0;
+        const allocatedQty = (it.warehouses || []).reduce(
+          (s, w) => s + (Number(w.quantity) || 0),
+          0
+        );
+        return sum + Math.max(itemQty, allocatedQty);
+      }, 0);
       const scannedQty = Number(order.numOfDispatchedQty) || 0;
       const scanPercent =
         orderTotalQty > 0
           ? Math.min(100, Math.round((scannedQty / orderTotalQty) * 100))
           : 0;
+
+      // For the dispatch dropdown, drop orders already fully dispatched.
+      if (pendingOnly && scannedQty >= orderTotalQty) {
+        return;
+      }
+
       order.items.forEach(item => {
         item.warehouses.forEach(wh => {
           const whId = wh.warehouse?._id?.toString() || wh.warehouse?.toString();

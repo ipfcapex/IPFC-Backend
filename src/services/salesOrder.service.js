@@ -643,8 +643,30 @@ exports.getOrders = async (filter = {}, page = 1, limit = 10, search = "") => {
 
   const totalPages = Math.ceil(totalItems / limitNum);
 
+  // Attach scan/dispatch progress per order (same calc as the warehouse view):
+  // orderTotalQty falls back to the sum of warehouse allocations when
+  // item.quantity is missing/zero, and scanPercent is dispatched / total.
+  const enrichedOrders = sellorder.map((doc) => {
+    const order = doc.toObject();
+    const orderTotalQty = (order.items || []).reduce((sum, it) => {
+      const itemQty = Number(it.quantity) || 0;
+      const allocatedQty = (it.warehouses || []).reduce(
+        (s, w) => s + (Number(w.quantity) || 0),
+        0
+      );
+      return sum + Math.max(itemQty, allocatedQty);
+    }, 0);
+    const scannedQty = Number(order.numOfDispatchedQty) || 0;
+    const scanPercent =
+      orderTotalQty > 0
+        ? Math.min(100, Math.round((scannedQty / orderTotalQty) * 100))
+        : 0;
+
+    return { ...order, orderTotalQty, numOfDispatchedQty: scannedQty, scanPercent };
+  });
+
   return {
-    sellorder,
+    sellorder: enrichedOrders,
     pagination: {
       currentPage: pageNum,
       totalPages,
@@ -1142,3 +1164,46 @@ exports.reverseDelivery = async (id, payload) => {
 
   return { order, production: updatedProduction, qrDoc };
 };
+
+// Orders still waiting to be scanned/dispatched by the warehouse manager:
+// delivery still PENDING, not yet scanned, and total ordered quantity still
+// greater than the quantity already dispatched (qty left to fulfil).
+exports.getOrdersForWarehouseScan = async () => {
+  const orders = await SellOrder.aggregate([
+    {
+      $match: {
+        isActive: true,
+        deliveryStatus: "PENDING",
+        // only orders the warehouse manager has not scanned yet
+        ScannedByWarehouseManager: "UNSCANNED",
+      },
+    },
+    {
+      $addFields: {
+        totalQuantity: {
+          $sum: {
+            $map: {
+              input: { $ifNull: ["$items", []] },
+              as: "item",
+              in: { $ifNull: ["$$item.quantity", 0] },
+            },
+          },
+        },
+        dispatchedQty: { $ifNull: ["$numOfDispatchedQty", 0] },
+      },
+    },
+    // keep orders that still have quantity left to scan (e.g. 5 ordered - 4 dispatched = 1 left)
+    { $match: { $expr: { $gt: ["$totalQuantity", "$dispatchedQty"] } } },
+    {
+      $project: {
+        _id: 1,
+        salesOrderNo: 1,
+        totalQuantity: 1,
+        numOfDispatchedQty: "$dispatchedQty",
+      },
+    },
+  ]);
+
+  return orders;
+};
+
