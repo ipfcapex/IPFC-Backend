@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { stockController } = require("../controllers");
+const { requireAuth } = require("../middleware/auth.authorization");
 
 router.post("/add", stockController.createStockbyQr);
 router.get("/", stockController.getAllStock);

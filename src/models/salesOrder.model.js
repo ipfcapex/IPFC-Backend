@@ -74,6 +74,10 @@ const qrCodeEntrySchema = new mongoose.Schema(
           type: Number,
           min: 1,
         },
+        scanqtyatdispatch: {
+          type: Number,
+          default: 0,
+        },
         ScanByorder: {
          type: String,
         enum: ["SCANNED", "UNSCANNED"],

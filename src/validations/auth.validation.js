@@ -94,8 +94,14 @@ const updateUserValidator = Joi.object({
   location: Joi.string(),
   profileImage: Joi.string(),
   isActive: Joi.boolean(),
-  warehouses: Joi.string(),
-  production: Joi.string(),
+  warehouses: Joi.alternatives().try(
+    Joi.array().items(Joi.string().hex().length(24)),
+    Joi.string().allow("", null)
+  ),
+  production: Joi.alternatives().try(
+    Joi.array().items(Joi.string().hex().length(24)),
+    Joi.string().allow("", null)
+  ),
 });
 
 module.exports = {

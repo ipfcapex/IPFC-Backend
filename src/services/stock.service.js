@@ -1,4 +1,5 @@
 const { Stock } = require("../models");
+const { User } = require("../models");
 const { Production } = require("../models");
 const qrCodeModel = require("../models/qrCode.model");
 const { decodeBase64Qr } = require("../utils/DecodeQR");
@@ -422,6 +423,20 @@ exports.softDeleteStock = async (id) => {
 exports.scanAndDispatch = async (req) => {
   const { qrData, ordNumScanFor } = req.body;
 
+  // ✅ Identify the logged-in warehouse manager from the access token and load
+  // their assigned warehouses (scanning is only allowed for those warehouses).
+  const managerId = req.user?.id || req.user?._id;
+  if (!managerId) {
+    throw new Error("Unauthorized: warehouse manager not identified");
+  }
+  const manager = await User.findById(managerId).select("warehouses role name");
+  if (!manager) {
+    throw new Error("Warehouse manager not found");
+  }
+  const managerWarehouseIds = (manager.warehouses || []).map((w) =>
+    w.toString()
+  );
+
   // ✅ Populate factory & warehouse to get their names
   const stock = await Stock.findOne({
     "stockdata.qrData": qrData,
@@ -442,21 +457,45 @@ exports.scanAndDispatch = async (req) => {
     throw new Error("Stock item already dispatched");
   }
 
-  // ✅ Find the order this scan is for and enforce the dispatch cap
+  // ✅ The warehouse this QR's stock belongs to must be assigned to the manager
+  const stockWarehouseId = (stock.warehouse?._id || stock.warehouse)?.toString();
+  if (!stockWarehouseId) {
+    throw new Error("This stock is not linked to any warehouse.");
+  }
+  if (!managerWarehouseIds.includes(stockWarehouseId)) {
+    throw new Error(
+      "You are not assigned to the warehouse this stock belongs to."
+    );
+  }
+
+  // ✅ Find the order this scan is for
   const order = await SellOrder.findOne({ salesOrderNo: ordNumScanFor });
   if (!order) {
     throw new Error(`Order ${ordNumScanFor} not found`);
   }
 
-  // Total quantity ordered across all items = max allowed scans
-  const totalOrderedQty = order.items.reduce(
-    (sum, it) => sum + (Number(it.quantity) || 0),
-    0
-  );
+  // ✅ Locate the order item + its allocation for THIS warehouse that still has
+  // remaining quantity to dispatch (scanqtyatdispatch < quantity). Multiple
+  // items can share an article, so we pick the next allocation with capacity.
+  let targetItem = null;
+  let targetWh = null;
+  for (const it of order.items) {
+    if (it.article?.toString() !== stockItem.article?.toString()) continue;
+    const candidate = (it.warehouses || []).find(
+      (w) =>
+        w.warehouse?.toString() === stockWarehouseId &&
+        (Number(w.scanqtyatdispatch) || 0) < (Number(w.quantity) || 0)
+    );
+    if (candidate) {
+      targetItem = it;
+      targetWh = candidate;
+      break;
+    }
+  }
 
-  if ((order.numOfDispatchedQty || 0) >= totalOrderedQty) {
+  if (!targetItem || !targetWh) {
     throw new Error(
-      `All ${totalOrderedQty} units for order ${ordNumScanFor} are already scanned. Cannot scan more.`
+      `All allocated units for article ${stockItem.article} in this warehouse are already dispatched for order ${ordNumScanFor}.`
     );
   }
 
@@ -480,8 +519,24 @@ exports.scanAndDispatch = async (req) => {
     }
   );
 
-  // ✅ One QR scanned = +1 to the order's dispatched quantity
-  order.numOfDispatchedQty = (order.numOfDispatchedQty || 0) + 1;
+  // ✅ One QR scanned = +1 to this warehouse allocation, capped at its quantity.
+  // When it reaches the allocated quantity, that allocation is fully SCANNED.
+  targetWh.scanqtyatdispatch = (Number(targetWh.scanqtyatdispatch) || 0) + 1;
+  if (targetWh.scanqtyatdispatch >= targetWh.quantity) {
+    targetWh.scanqtyatdispatch = targetWh.quantity;
+    targetWh.ScanByorder = "SCANNED";
+  }
+
+  // Keep per-item and per-order dispatched aggregates in sync (+1 per scan)
+  targetItem.numOfDispatchedQty = (Number(targetItem.numOfDispatchedQty) || 0) + 1;
+  order.numOfDispatchedQty = (Number(order.numOfDispatchedQty) || 0) + 1;
+
+  // Overall scanned status: all allocations across all items must be SCANNED
+  const allScanned = order.items.every((it) =>
+    (it.warehouses || []).every((w) => w.ScanByorder === "SCANNED")
+  );
+  order.ScannedByWarehouseManager = allScanned ? "SCANNED" : "UNSCANNED";
+
   await order.save();
 
   return {
@@ -499,6 +554,9 @@ exports.scanAndDispatch = async (req) => {
     dispatchAt: stockItem.dispatchAt,
     ordNumScanFor: ordNumScanFor,
     lastScanAt: scannedAt,
+    scanqtyatdispatch: targetWh.scanqtyatdispatch,
+    allocatedQty: targetWh.quantity,
+    ScanByorder: targetWh.ScanByorder,
     numOfDispatchedQty: order.numOfDispatchedQty,
   };
 };

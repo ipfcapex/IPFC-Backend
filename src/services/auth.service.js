@@ -580,10 +580,13 @@ const updateUser = async (id, updateData, profileImage) => {
   }
 
   // 2. Password Handling
-  if (updateData.password) {
+  if (updateData.password && String(updateData.password).trim()) {
     // Manual validation if needed, otherwise let the schema handle it
     const hashedPassword = await bcrypt.hash(updateData.password, 10);
     updateData.password = hashedPassword;
+  } else {
+    // Blank/absent password => keep the existing one (never overwrite with "")
+    delete updateData.password;
   }
 
   // 3. Profile Image Upload
@@ -599,32 +602,39 @@ const updateUser = async (id, updateData, profileImage) => {
   // 4. FIX FOR CAST ERROR (Cleaning the arrays)
   const formatIds = (data) => {
     if (!data) return undefined; // Don't update if null
-    if (Array.isArray(data)) return data;
-    if (typeof data === 'string') {
-      return data.replace(/[\[\]'\n\r]/g, '').split(',').map(id => id.trim()).filter(id => id);
-    }
-    return undefined;
+    // Normalize to an array, then strip any bracket/quote junk from every
+    // element (handles "[ '' ]", "['id']", arrays of malformed strings, etc.)
+    const arr = Array.isArray(data) ? data : [data];
+    return arr
+      .flatMap(item => String(item).replace(/[\[\]'"\n\r]/g, '').split(','))
+      .map(id => id.trim())
+      .filter(id => id);
   };
 
   // 5. Build the final Update Object
   const finalUpdate = { ...updateData };
   const pushQuery = {};
 
-  // Clean the IDs before updating
-  if (updateData.production) {
-    const cleanedProduction = formatIds(updateData.production);
-    
+  // Clean the IDs before updating.
+  // NOTE: multipart/form-data sends empty fields as "" (not undefined), so we
+  // check presence with `in` and always normalize through formatIds. An empty
+  // value becomes [] instead of leaking "" to Mongoose (which would CastError).
+  if ('production' in updateData) {
+    const cleanedProduction = formatIds(updateData.production) || [];
+
     if (user.role === 'Packing Reporter') {
-      // Use $push to ADD to existing array
-      pushQuery.$push = { production: { $each: cleanedProduction } };
+      // Use $push to ADD to existing array (skip when nothing to add)
+      if (cleanedProduction.length) {
+        pushQuery.$push = { production: { $each: cleanedProduction } };
+      }
       delete finalUpdate.production; // Remove from standard update so it doesn't overwrite
     } else {
       finalUpdate.production = cleanedProduction;
     }
   }
 
-  if (updateData.warehouses) {
-    finalUpdate.warehouses = formatIds(updateData.warehouses);
+  if ('warehouses' in updateData) {
+    finalUpdate.warehouses = formatIds(updateData.warehouses) || [];
   }
 
   // 6. Execute Update

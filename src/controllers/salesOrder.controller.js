@@ -2,6 +2,7 @@ const { parseString } = require('fast-csv');
 const { orderService } = require('../services');
 const { Cart } = require('../models')
 const { SellOrder } = require('../models')
+const { User } = require('../models')
 
 exports.getAggregatedStocks = async (req, res) => {
   try {
@@ -549,7 +550,14 @@ exports.reverseDelivery = async (req, res) => {
 // Orders pending warehouse scan/dispatch (total item qty != numOfDispatchedQty)
 exports.getOrdersForWarehouseScan = async (req, res) => {
   try {
-    const orders = await orderService.getOrdersForWarehouseScan();
+    // Identify the logged-in warehouse manager and their assigned warehouse(s),
+    // so the dropdown only lists orders that still need scanning at THEIR
+    // warehouse(s) (orders can be split across multiple warehouses).
+    const managerId = req.user?.id || req.user?._id;
+    const manager = await User.findById(managerId).select("warehouses");
+    const warehouseIds = (manager?.warehouses || []).map((w) => w.toString());
+
+    const orders = await orderService.getOrdersForWarehouseScan(warehouseIds);
 
     return res.status(200).json({
       success: true,
