@@ -445,7 +445,7 @@ exports.getAllbySalesperson = async (req, res) => {
       );
     };
     let cartOrders = await SellOrder.find(query)
-      .select("salesOrderNo customer article items createdBy createdAt")
+      .select("salesOrderNo customer article items createdBy createdAt numOfDispatchedQty")
       .populate("customer", "name")
       .populate("createdBy", "name email")
       .lean();
@@ -461,9 +461,30 @@ exports.getAllbySalesperson = async (req, res) => {
     const skip = (pageNum - 1) * limitNum;
     const paginatedOrders = filteredOrders.slice(skip, skip + limitNum);
 
+    // Attach scan/dispatch progress per order (same calc as the warehouse view):
+    // orderTotalQty falls back to the sum of warehouse allocations when
+    // item.quantity is missing/zero, and scanPercent is dispatched / total.
+    const enrichedOrders = paginatedOrders.map((order) => {
+      const orderTotalQty = (order.items || []).reduce((sum, it) => {
+        const itemQty = Number(it.quantity) || 0;
+        const allocatedQty = (it.warehouses || []).reduce(
+          (s, w) => s + (Number(w.quantity) || 0),
+          0
+        );
+        return sum + Math.max(itemQty, allocatedQty);
+      }, 0);
+      const scannedQty = Number(order.numOfDispatchedQty) || 0;
+      const scanPercent =
+        orderTotalQty > 0
+          ? Math.min(100, Math.round((scannedQty / orderTotalQty) * 100))
+          : 0;
+
+      return { ...order, orderTotalQty, numOfDispatchedQty: scannedQty, scanPercent };
+    });
+
     return res.status(200).json({
       success: true,
-      data: paginatedOrders,
+      data: enrichedOrders,
       pagination: {
         currentPage: pageNum,
         totalPages,
@@ -521,6 +542,25 @@ exports.reverseDelivery = async (req, res) => {
     return res.status(400).json({
       success: false,
       message: error.message,
+    });
+  }
+};
+
+// Orders pending warehouse scan/dispatch (total item qty != numOfDispatchedQty)
+exports.getOrdersForWarehouseScan = async (req, res) => {
+  try {
+    const orders = await orderService.getOrdersForWarehouseScan();
+
+    return res.status(200).json({
+      success: true,
+      data: orders,
+    });
+  } catch (error) {
+    console.error("Error fetching orders for warehouse scan:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to retrieve orders for warehouse scan",
+      error: error.message,
     });
   }
 };

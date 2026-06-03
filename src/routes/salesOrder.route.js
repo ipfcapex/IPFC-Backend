@@ -15,6 +15,8 @@ router.get('/getallOrders', salesOrderController.getAll);
 //get customer order history
 router.get('/customerOrderHistory/:id', salesOrderController.getCustomerById);
 router.get('/wishlistdata', salesOrderController.getWishlistData);
+//orders pending warehouse scan/dispatch (for dispatch scanner dropdown)
+router.get('/warehouse-scan/pending', salesOrderController.getOrdersForWarehouseScan);
 router.get('/:id',  salesOrderController.getById);
 router.put('/:id', salesOrderController.update);
 router.delete('/:id', salesOrderController.remove);
