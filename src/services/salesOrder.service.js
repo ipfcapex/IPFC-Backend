@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const { SellOrder } = require("../models");
 const { Stock } = require("../models");
 const { Customer } = require("../models");
@@ -1165,41 +1166,80 @@ exports.reverseDelivery = async (id, payload) => {
   return { order, production: updatedProduction, qrDoc };
 };
 
-// Orders still waiting to be scanned/dispatched by the warehouse manager:
-// delivery still PENDING, not yet scanned, and total ordered quantity still
-// greater than the quantity already dispatched (qty left to fulfil).
-exports.getOrdersForWarehouseScan = async () => {
+// Orders still waiting to be scanned/dispatched by THIS warehouse manager.
+// An order can have its items split across multiple warehouses (e.g. WH1 = 5,
+// WH2 = 5). Each warehouse manager only scans the quantity allocated to their
+// own warehouse(s), so we scope all the totals to `warehouseIds` and only
+// return orders that still have allocated-but-not-yet-dispatched quantity for
+// those warehouses.
+exports.getOrdersForWarehouseScan = async (warehouseIds = []) => {
+  // No assigned warehouses => nothing to scan.
+  if (!warehouseIds.length) return [];
+
+  const whObjectIds = warehouseIds
+    .filter((id) => mongoose.Types.ObjectId.isValid(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+
+  // Sums a numeric field over the warehouse allocations that belong to this
+  // manager's warehouse(s), across every item in the order.
+  const sumForMyWarehouses = (field) => ({
+    $sum: {
+      $map: {
+        input: { $ifNull: ["$items", []] },
+        as: "item",
+        in: {
+          $sum: {
+            $map: {
+              input: {
+                $filter: {
+                  input: { $ifNull: ["$$item.warehouses", []] },
+                  as: "w",
+                  cond: { $in: ["$$w.warehouse", whObjectIds] },
+                },
+              },
+              as: "w",
+              in: { $ifNull: [`$$w.${field}`, 0] },
+            },
+          },
+        },
+      },
+    },
+  });
+
   const orders = await SellOrder.aggregate([
     {
       $match: {
         isActive: true,
         deliveryStatus: "PENDING",
-        // only orders the warehouse manager has not scanned yet
-        ScannedByWarehouseManager: "UNSCANNED",
       },
     },
     {
       $addFields: {
-        totalQuantity: {
-          $sum: {
-            $map: {
-              input: { $ifNull: ["$items", []] },
-              as: "item",
-              in: { $ifNull: ["$$item.quantity", 0] },
-            },
-          },
-        },
-        dispatchedQty: { $ifNull: ["$numOfDispatchedQty", 0] },
+        // Quantity allocated to this manager's warehouse(s)
+        warehouseAllocatedQty: sumForMyWarehouses("quantity"),
+        // Quantity already dispatched/scanned for this manager's warehouse(s)
+        warehouseScannedQty: sumForMyWarehouses("scanqtyatdispatch"),
       },
     },
-    // keep orders that still have quantity left to scan (e.g. 5 ordered - 4 dispatched = 1 left)
-    { $match: { $expr: { $gt: ["$totalQuantity", "$dispatchedQty"] } } },
+    // Keep orders that are allocated to this warehouse AND still have qty left
+    // (e.g. WH1 allocated 5, scanned 4 => 1 left).
+    {
+      $match: {
+        $expr: {
+          $gt: ["$warehouseAllocatedQty", "$warehouseScannedQty"],
+        },
+      },
+    },
     {
       $project: {
         _id: 1,
         salesOrderNo: 1,
-        totalQuantity: 1,
-        numOfDispatchedQty: "$dispatchedQty",
+        // Totals scoped to this manager's warehouse(s)
+        totalQuantity: "$warehouseAllocatedQty",
+        numOfDispatchedQty: "$warehouseScannedQty",
+        remainingQty: {
+          $subtract: ["$warehouseAllocatedQty", "$warehouseScannedQty"],
+        },
       },
     },
   ]);

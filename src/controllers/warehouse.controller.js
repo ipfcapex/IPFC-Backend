@@ -194,6 +194,16 @@ exports.getOrderDatabyWH = async (req, res) => {
         item.warehouses.forEach(wh => {
           const whId = wh.warehouse?._id?.toString() || wh.warehouse?.toString();
           if (whId && assignedWarehouses.includes(whId)) {
+            // Per-warehouse-allocation scan progress:
+            // how much of THIS warehouse's allocated quantity has been
+            // scanned/dispatched (wh.scanqtyatdispatch out of wh.quantity).
+            const allocatedQty = Number(wh.quantity) || 0;
+            const allocScannedQty = Number(wh.scanqtyatdispatch) || 0;
+            const whScanPercent =
+              allocatedQty > 0
+                ? Math.min(100, Math.round((allocScannedQty / allocatedQty) * 100))
+                : 0;
+
             flattened.push({
               orderId: order._id,
               salesOrderNo: order.salesOrderNo,
@@ -209,9 +219,13 @@ exports.getOrderDatabyWH = async (req, res) => {
               warehouse: wh.warehouse,
               quantity: wh.quantity,
               ScanByorder: wh.ScanByorder,
+              // Per-warehouse allocation scan progress
+              scanqtyatdispatch: allocScannedQty,
+              scanPercent: whScanPercent,
+              // Order-level totals kept for backward compatibility
               numOfDispatchedQty: scannedQty,
               orderTotalQty,
-              scanPercent
+              orderScanPercent: scanPercent
             });
           }
         });
