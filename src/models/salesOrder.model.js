@@ -187,6 +187,7 @@ const orderSchema = new mongoose.Schema(
     },
     Location: [locationSchema],
     items: [qrCodeEntrySchema],
+    originalItems: [qrCodeEntrySchema],
     WishList: [Wishlistitems],
     isActive: {
       type: Boolean,
@@ -224,7 +225,7 @@ const orderSchema = new mongoose.Schema(
     },
     deliveryStatus: {
       type: String,
-      enum: ["PENDING", "DELIVERED", "HOLD"],
+      enum: ["PENDING", "DELIVERED", "HOLD", "PARTIALLY_DELIVERED"],
       default: "PENDING",
     },
     reverceHistory: [reverceHistorySchema],

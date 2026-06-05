@@ -1247,3 +1247,49 @@ exports.getOrdersForWarehouseScan = async (warehouseIds = []) => {
   return orders;
 };
 
+exports.stopOrder = async (orderId) => {
+  const order = await SellOrder.findById(orderId);
+  if (!order) throw new Error("Order not found");
+
+  if (!order.originalItems || order.originalItems.length === 0) {
+    order.originalItems = order.items;
+  }
+
+  let finalItems = [];
+
+  for (let i = 0; i < order.items.length; i++) {
+    const item = order.items[i];
+    let newWarehouses = [];
+    let newItemTotalQty = 0;
+
+    if (item.warehouses && Array.isArray(item.warehouses)) {
+      for (let j = 0; j < item.warehouses.length; j++) {
+        const wh = item.warehouses[j];
+        const scannedQty = Number(wh.scanqtyatdispatch) || 0;
+        if (scannedQty > 0) {
+          wh.quantity = scannedQty;
+          wh.ScanByorder = "SCANNED";
+          newWarehouses.push(wh);
+          newItemTotalQty += scannedQty;
+        }
+      }
+    }
+
+    item.warehouses = newWarehouses;
+    item.quantity = newItemTotalQty;
+
+    if (item.quantity > 0) {
+      finalItems.push(item);
+    }
+  }
+
+  order.items = finalItems;
+  order.ScannedByWarehouseManager = "SCANNED";
+  order.deliveryStatus = "PARTIALLY_DELIVERED";
+
+  order.numOfDispatchedQty = order.items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+
+  await order.save();
+
+  return order;
+};

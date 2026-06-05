@@ -33,5 +33,7 @@ router.delete('/order-delete/:id', salesOrderController.deletessItem);
 //Reverse delivery (return) for a delivered order
 router.post('/reverse-delivery/:id', salesOrderController.reverseDelivery);
 
+//Stop order
+router.post('/stop/:id', requireAuth, requireAdminRoles('Super Admin', 'Administrator', 'Admin'), salesOrderController.stopOrder);
 
 module.exports = router;

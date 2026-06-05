@@ -572,3 +572,22 @@ exports.getOrdersForWarehouseScan = async (req, res) => {
     });
   }
 };
+
+exports.stopOrder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await orderService.stopOrder(id);
+
+    return res.status(200).json({
+      success: true,
+      message: "Order stopped and partially delivered items prepared successfully",
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error in stopOrder:", error.message);
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
