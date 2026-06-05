@@ -10,7 +10,7 @@ exports.getsellReport = async (filter = {}, page = 1, limit = 10, search = "") =
     isActive: true,
     accountSectionApproval: "APPROVED",
     inventoryManagerApproval: "APPROVED",
-    deliveryStatus: "DELIVERED",
+    deliveryStatus: { $in: ["DELIVERED", "PARTIALLY_DELIVERED"] },
     ...filter,
   };
 
@@ -243,7 +243,7 @@ exports.getsellReportatAdmin = async () => {
         isActive: true,
         accountSectionApproval: "APPROVED",
         inventoryManagerApproval: "APPROVED",
-        deliveryStatus: "DELIVERED",
+        deliveryStatus: { $in: ["DELIVERED", "PARTIALLY_DELIVERED"] },
       }
     },
     { $unwind: "$items" },
@@ -650,7 +650,7 @@ exports.getSalesGraph = async () => {
   ];
   try {
     const SalesData = await SellOrder.aggregate([
-      { $match: { isActive: true, accountSectionApproval: "APPROVED", inventoryManagerApproval: "APPROVED", deliveryStatus: "DELIVERED" } },
+      { $match: { isActive: true, accountSectionApproval: "APPROVED", inventoryManagerApproval: "APPROVED", deliveryStatus: { $in: ["DELIVERED", "PARTIALLY_DELIVERED"] } } },
       {
         $group: {
           _id: {
@@ -709,7 +709,7 @@ exports.getTopsales = async (filter = {}, page = 1, limit = 10) => {
     isActive: true,
     accountSectionApproval: "APPROVED",
     inventoryManagerApproval: "APPROVED",
-    deliveryStatus: "DELIVERED",
+    deliveryStatus: { $in: ["DELIVERED", "PARTIALLY_DELIVERED"] },
     ...filter,
   };
 
@@ -1086,7 +1086,7 @@ exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter 
 
   let matchBase = {
     inventoryManagerApproval: "APPROVED",
-    deliveryStatus: "DELIVERED",
+    deliveryStatus: { $in: ["DELIVERED", "PARTIALLY_DELIVERED"] },
   };
 
   const pipelines = [];

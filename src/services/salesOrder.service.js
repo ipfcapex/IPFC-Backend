@@ -102,7 +102,7 @@ const prodAgg = await Production.aggregate([
     $match: {
       isActive: true,
       // 1️⃣ Filter by Order Status to exclude DELIVERED/COMPLETED orders
-      deliveryStatus: { $nin: ["DELIVERED", "CANCELLED", "COMPLETED"] }, 
+      deliveryStatus: { $nin: ["DELIVERED", "PARTIALLY_DELIVERED", "COMPLETED"] }, 
       accountSectionApproval: { $in: ["PENDING", "APPROVED"] },
       inventoryManagerApproval: { $in: ["PENDING", "APPROVED"] },
     },
@@ -1252,7 +1252,12 @@ exports.stopOrder = async (orderId) => {
   if (!order) throw new Error("Order not found");
 
   if (!order.originalItems || order.originalItems.length === 0) {
-    order.originalItems = order.items;
+    // Save a deep clone of the original items before we mutate them below.
+    // Use JSON deep clone because items are plain data from Mongo and this
+    // prevents `originalItems` from being mutated when we change `order.items`.
+    order.originalItems = JSON.parse(JSON.stringify(order.items || []));
+    // Persist immediately so the original snapshot is stored before changes.
+    await order.save();
   }
 
   let finalItems = [];
@@ -1287,7 +1292,26 @@ exports.stopOrder = async (orderId) => {
   order.ScannedByWarehouseManager = "SCANNED";
   order.deliveryStatus = "PARTIALLY_DELIVERED";
 
-  order.numOfDispatchedQty = order.items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+  // Reconcile warehouse quantities per item using scanned dispatch values
+  if (Array.isArray(order.items)) {
+    order.items.forEach((item) => {
+      if (Array.isArray(item.warehouses)) {
+        let totalScanned = 0;
+        item.warehouses.forEach((wh) => {
+          const scanned = Number(wh.scanqtyatdispatch) || 0;
+          // Set the warehouse allocation to the scanned dispatch amount
+          wh.quantity = scanned;
+          if (scanned > 0) wh.ScanByorder = "SCANNED";
+          totalScanned += scanned;
+        });
+        // Set the item quantity to the total of scanned quantities across warehouses
+        item.quantity = totalScanned;
+      }
+    });
+  }
+
+  // Total dispatched quantity for the whole order
+  order.numOfDispatchedQty = order.items.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
 
   await order.save();
 
