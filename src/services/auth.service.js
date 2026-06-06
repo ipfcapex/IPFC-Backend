@@ -188,7 +188,7 @@ const loginWithOtp = async (req, email, otp, latitude, longitude) => {
   };
 
   // 8️⃣ Optional notification
-  // sendNotification("loginSuccess", { message: "Login Success", data: user });
+  sendNotification("loginSuccess", { id: user._id, message: "Login Success", data: user });
 
   return {
     accessToken,
