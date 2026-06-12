@@ -6,25 +6,25 @@ const upload = require('../middleware/csv.multer');
 const imageuploads = require("../middleware/imageUpload.Middleware");
 
 //add Article single at a time
-router.post('/category',imageuploads.single("image"),requireAuth, requireAdminRoles('Admin', 'Administrator' ,'Sales Person','Packing Reporter'), productController.createProduct);
+router.post('/category',imageuploads.single("image"),requireAuth, requireAdminRoles('Admin', 'Administrator' ,'Sales Person','Packing Reporter','Inventory Manager'), productController.createProduct);
 
 //add Article multipal at a time
-router.post('/addArticle',imageuploads.array("image"),requireAuth, requireAdminRoles('Admin', 'Administrator' ,'Sales Person','Packing Reporter'), productController.createProductTypeTwoController);
+router.post('/addArticle',imageuploads.array("image"),requireAuth, requireAdminRoles('Admin', 'Administrator' ,'Sales Person','Packing Reporter','Inventory Manager'), productController.createProductTypeTwoController);
 
 //get all article
-router.get('/',requireAuth, requireAdminRoles('Admin', 'Administrator','Sales Person','Packing Reporter'), productController.getProducts);
+router.get('/',requireAuth, requireAdminRoles('Admin', 'Administrator','Sales Person','Packing Reporter','Inventory Manager'), productController.getProducts);
 
 //get article by it category id 
-router.get('/getone/:id',requireAuth, requireAdminRoles('Admin', 'Administrator','Sales Person','Packing Reporter'), productController.getProductByIds2);
+router.get('/getone/:id',requireAuth, requireAdminRoles('Admin', 'Administrator','Sales Person','Packing Reporter','Inventory Manager'), productController.getProductByIds2);
 
 //get a article in side its all catgory
-router.get('/:id',requireAuth, requireAdminRoles('Admin', 'Administrator','Sales Person','Packing Reporter'), productController.getProductByIds);
+router.get('/:id',requireAuth, requireAdminRoles('Admin', 'Administrator','Sales Person','Packing Reporter','Inventory Manager'), productController.getProductByIds);
 
 //update article catgeory wise
-router.put('/:id/update',imageuploads.single("image"),requireAuth, requireAdminRoles('Admin', 'Administrator','Sales Person','Packing Reporter'), productController.updateProduct);
+router.put('/:id/update',imageuploads.single("image"),requireAuth, requireAdminRoles('Admin', 'Administrator','Sales Person','Packing Reporter','Inventory Manager'), productController.updateProduct);
 
 //Delete aeticle category wise
-router.delete('/:id/',requireAuth, requireAdminRoles('Admin', 'Administrator','Sales Person','Packing Reporter'), productController.deleteProduct);
+router.delete('/:id/',requireAuth, requireAdminRoles('Admin', 'Administrator','Sales Person','Packing Reporter','Inventory Manager'), productController.deleteProduct);
 
 // upload Article using csv 
 router.post('/upload-csv', upload.single('file'), productController.uploadCSVController);
