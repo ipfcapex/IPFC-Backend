@@ -12,16 +12,16 @@ const handleValidation = (req, res, next) => {
   next();
 };
 
-router.post('/addProduct', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager'), validateProduct, handleValidation, productionController.createProduct);
-router.get('/', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager'), productionController.getProducts);
+router.post('/addProduct', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager', 'Inventory Manager'), validateProduct, handleValidation, productionController.createProduct);
+router.get('/', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager', 'Inventory Manager'), productionController.getProducts);
 router.get('/productionmanager', requireAuth, productionController.getProductionDatabyPM);
 //get production data with out QR data
-router.get('/noqr', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager'), productionController.getProductionsWithoutQR);
-router.get('/:id', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager'), productionController.getProductByIdController);
+router.get('/noqr', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager', 'Inventory Manager'), productionController.getProductionsWithoutQR);
+router.get('/:id', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager', 'Inventory Manager'), productionController.getProductByIdController);
 router.get('/factory/:factory', requireAuth, productionController.getStockByFactoryssss);
-router.put('/:id', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager'), validateProduct, handleValidation, productionController.updateProduct);
-router.delete('/:id', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager'), productionController.deleteProduct);
-router.post('/qrscan', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager'),productionController.TrackProductionbyQr);
-router.post('/instock-qrscan', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager'),productionController.TrackProductionbyQrttostocin);
+router.put('/:id', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager', 'Inventory Manager'), validateProduct, handleValidation, productionController.updateProduct);
+router.delete('/:id', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager', 'Inventory Manager'), productionController.deleteProduct);
+router.post('/qrscan', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager', 'Inventory Manager'),productionController.TrackProductionbyQr);
+router.post('/instock-qrscan', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager', 'Inventory Manager'),productionController.TrackProductionbyQrttostocin);
 
 module.exports = router;
