@@ -446,9 +446,10 @@ exports.getAllbySalesperson = async (req, res) => {
       );
     };
     let cartOrders = await SellOrder.find(query)
-      .select("salesOrderNo customer article items createdBy createdAt numOfDispatchedQty")
+      .select("salesOrderNo customer article items createdBy createdAt numOfDispatchedQty scheme")
       .populate("customer", "name")
       .populate("createdBy", "name email")
+      .populate("scheme", "schemesName schemesType schemesQuantity schemesDescription")
       .lean();
 
     // Apply search
