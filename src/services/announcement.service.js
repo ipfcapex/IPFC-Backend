@@ -35,7 +35,7 @@ exports.getallannouncement = async (page = 1, limit = 10, isActive = true, searc
 
   const [announcement, totalItems] = await Promise.all([
     Announcement.find(query)
-      .sort({ createdAt: -1 })
+      .sort({ pinned: -1, createdAt: -1 })
       .skip(skip)
       .limit(limitNum),
     Announcement.countDocuments(query),
