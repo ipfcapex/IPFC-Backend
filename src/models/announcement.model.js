@@ -49,6 +49,10 @@ const AnnouncementSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    pinned: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );

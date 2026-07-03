@@ -443,11 +443,11 @@ exports.AddOrdertoCart = async ({ customer, location, items, schemesId, createdB
   const wishlistItems = [];
 
   for (const item of items) {
-    if (!item.quantity || typeof item.quantity !== "number" || item.quantity < 5) {
-      throw new Error(
-        `Quantity for article ${item.article}, categoryCode ${item.categoryCode} must be at least 5`
-      );
-    }
+    // if (!item.quantity || typeof item.quantity !== "number" || item.quantity < 5) {
+    //   throw new Error(
+    //     `Quantity for article ${item.article}, categoryCode ${item.categoryCode} must be at least 5`
+    //   );
+    // }
 
 const productRecord = await Product.findOne({
   article: item.article,
