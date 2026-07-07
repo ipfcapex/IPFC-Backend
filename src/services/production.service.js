@@ -8,6 +8,27 @@ const mongoose = require("mongoose");
 const qrCodeModel = require("../models/qrCode.model");
 const { sendNotification } = require("./notificationService");
 
+// Reshape a populated production (lean object):
+// - keep only the product name (article) on productId
+// - resolve categoryId to its related category object from the product
+const attachCategoryDetail = (prod) => {
+  if (!prod) return prod;
+  const product = prod.productId;
+  if (product && typeof product === "object") {
+    const matched = Array.isArray(product.category)
+      ? product.category.find(
+          (c) => String(c._id) === String(prod.categoryId)
+        )
+      : null;
+    prod.productId = { _id: product._id, article: product.article };
+    if (matched) prod.categoryId = matched;
+  }
+  // article is available via productId, category via categoryId
+  delete prod.article;
+  delete prod.category;
+  return prod;
+};
+
 //apply wish list to prodution qty
 // const applyProductionToWishlists = async (productionData) => {
 //   const {
@@ -273,18 +294,11 @@ exports.createProduct = async (data) => {
     // 🏭 Step 8: Create Production record
     const productionData = {
       factory: data.factory,
+      productId: productByArticle._id,
+      categoryId: matchedCategory._id,
       productionNo,
-      article: data.article,
       productionDate: data.productionDate,
       productionQuantity: data.productionQuantity,
-      category: {
-        categoryCode: data.categoryCode,
-        color: data.color,
-        size: data.size,
-        type: selectedType,
-        quality: selectedQuality,
-        image: selectedImage
-      }
     };
 
     const production = await Production.create(productionData);
@@ -343,9 +357,11 @@ exports.getProducts = async (page = 1, limit = 10, search = "") => {
   const [products, totalItems] = await Promise.all([
     Production.find(query)
       .populate("factory", "name")
+      .populate("productId", "article category")
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limitNum),
+      .limit(limitNum)
+      .lean(),
     Production.countDocuments(query),
   ]);
 
@@ -353,7 +369,7 @@ exports.getProducts = async (page = 1, limit = 10, search = "") => {
 
   return {
     success: true,
-    products,
+    products: products.map(attachCategoryDetail),
     pagination: {
       currentPage: pageNum,
       totalPages,
@@ -390,9 +406,11 @@ exports.getproductionDatawithoutQR = async (page = 1, limit = 10, search = "") =
   const [productions, totalItems] = await Promise.all([
     Production.find(query)
       .populate("factory", "name")
+      .populate("productId", "article category")
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limitNum),
+      .limit(limitNum)
+      .lean(),
     Production.countDocuments(query),
   ]);
 
@@ -400,7 +418,7 @@ exports.getproductionDatawithoutQR = async (page = 1, limit = 10, search = "") =
 
   return {
     success: true,
-    products: productions,
+    products: productions.map(attachCategoryDetail),
     pagination: {
       currentPage: pageNum,
       limit: limitNum,
@@ -411,7 +429,17 @@ exports.getproductionDatawithoutQR = async (page = 1, limit = 10, search = "") =
 };
 
 exports.getProductsById = async (id) => {
-  return await Production.findById(id).populate("factory", "name");
+  const production = await Production.findById(id)
+    .populate("factory", "name")
+    .populate("productId", "article category")
+    .lean();
+  const shaped = attachCategoryDetail(production);
+  if (shaped) {
+    // article is available via productId, category via categoryId
+    delete shaped.article;
+    delete shaped.category;
+  }
+  return shaped;
 };
 
 exports.getAggregatedStockByFactory = async (factory, page = 1, limit = 10, search = "") => {

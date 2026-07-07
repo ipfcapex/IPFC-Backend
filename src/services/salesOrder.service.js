@@ -24,6 +24,61 @@ function normalizeKey(obj) {
   ].join("-");
 }
 
+// Enrich order/cart/wishlist items with article/category details resolved
+// from productId + categoryId (items no longer store the hard keys). Accepts an
+// array of plain objects (use .lean() or .toObject()) and mutates them in place.
+async function enrichOrdersWithProductDetails(orders) {
+  if (!Array.isArray(orders) || orders.length === 0) return orders;
+  const ids = new Set();
+  const collect = (arr) =>
+    (arr || []).forEach((it) => {
+      const pid = it?.productId?._id || it?.productId;
+      if (pid) ids.add(String(pid));
+    });
+  orders.forEach((o) => {
+    collect(o.items);
+    collect(o.originalItems);
+    collect(o.WishList);
+  });
+  if (ids.size === 0) return orders;
+
+  const products = await Product.find({ _id: { $in: [...ids] } }).select("article category");
+  const pmap = {};
+  products.forEach((p) => { pmap[String(p._id)] = p; });
+
+  const enrichItem = (it) => {
+    if (!it) return it;
+    const pid = it.productId?._id || it.productId;
+    if (!pid) return it;
+
+    const prod = pmap[String(pid)];
+    const cat = prod?.category?.find((c) => String(c._id) === String(it.categoryId?._id || it.categoryId));
+
+    const enriched = {
+      ...it,
+      productId: prod ? { _id: prod._id, article: prod.article } : it.productId,
+      categoryId: cat || it.categoryId,
+      article: prod?.article || it.article,
+      categoryCode: cat?.categoryCode || it.categoryCode,
+      color: cat?.color || it.color,
+      size: cat?.size || it.size,
+      type: cat?.type ? (Array.isArray(cat.type) ? cat.type[0] : cat.type) : it.type,
+      quality: cat?.quality ? (Array.isArray(cat.quality) ? cat.quality[0] : cat.quality) : it.quality,
+      image: it.image && it.image.length ? it.image : cat?.image || [],
+    };
+
+    return enriched;
+  };
+
+  orders.forEach((o) => {
+    if (o.items) o.items = o.items.map(enrichItem);
+    if (o.originalItems) o.originalItems = o.originalItems.map(enrichItem);
+    if (o.WishList) o.WishList = o.WishList.map(enrichItem);
+  });
+  return orders;
+}
+exports.enrichOrdersWithProductDetails = enrichOrdersWithProductDetails;
+
 exports.getAggregatedStock = async (page = 1, limit = 10, search = "") => {
   const skip = (page - 1) * limit;
 
@@ -33,31 +88,21 @@ exports.getAggregatedStock = async (page = 1, limit = 10, search = "") => {
   const stockAgg = await Stock.aggregate([
     { $match: { isActive: { $ne: false } } },
     { $unwind: "$stockdata" },
-    { $match: { "stockdata.article": { $nin: [null, ""] } } },
-    {
-      $project: {
-        article: "$stockdata.article",
-        categoryCode: "$stockdata.categoryCode",
-        color: "$stockdata.color",
-        size: "$stockdata.size",
-        type: "$stockdata.type",
-        quality: "$stockdata.quality",
-        quantity: "$stockdata.quantity",
-        dispatched: "$stockdata.dispatched",
-      },
-    },
+    { $match: { "stockdata.productId": { $ne: null } } },
     {
       $group: {
         _id: {
-          article: "$article",
-          categoryCode: "$categoryCode",
-          color: "$color",
-          size: "$size",
-          type: "$type",
-          quality: "$quality",
+          productId: "$stockdata.productId",
+          categoryId: "$stockdata.categoryId",
         },
         stockQty: {
-          $sum: { $cond: [{ $eq: ["$dispatched", false] }, "$quantity", 0] },
+          $sum: {
+            $cond: [
+              { $eq: ["$stockdata.dispatched", false] },
+              "$stockdata.quantity",
+              0,
+            ],
+          },
         },
       },
     },
@@ -68,18 +113,12 @@ exports.getAggregatedStock = async (page = 1, limit = 10, search = "") => {
      2️⃣ PRODUCTION STOCK (Scanned QR Codes only)
      =============================== */
 const prodAgg = await Production.aggregate([
-    { $match: { isActive: { $ne: false } } },
-    { $unwind: "$category" },
-    { $match: { article: { $nin: [null, ""] } } },
+    { $match: { isActive: { $ne: false }, productId: { $ne: null } } },
     {
       $group: {
         _id: {
-          article: "$article",
-          categoryCode: "$category.categoryCode",
-          color: "$category.color",
-          size: "$category.size",
-          type: "$category.type",
-          quality: "$category.quality",
+          productId: "$productId",
+          categoryId: "$categoryId",
         },
         totalProduction: { $sum: { $ifNull: ["$stockinQuantity", 0] } },
         totalDispatched: { $sum: { $ifNull: ["$dispatchedQuantity", 0] } },
@@ -137,12 +176,8 @@ const prodAgg = await Production.aggregate([
   {
     $group: {
       _id: {
-        article: "$items.article",
-        categoryCode: "$items.categoryCode",
-        color: "$items.color",
-        size: "$items.size",
-        type: "$items.type",
-        quality: "$items.quality",
+        productId: "$items.productId",
+        categoryId: "$items.categoryId",
       },
       orderQty: { $sum: "$itemQuantity" },
     },
@@ -155,28 +190,14 @@ const prodAgg = await Production.aggregate([
   const cartAgg = await Cart.aggregate([
     { $match: { isActive: true } },
     { $unwind: { path: "$items"} },
-    {
-      $project: {
-        article: "$items.article",
-        categoryCode: "$items.categoryCode",
-        color: "$items.color",
-        size: "$items.size",
-        type: "$items.type",
-        quality: "$items.quality",
-        quantity: { $ifNull: ["$items.quantity", 0] },
-      },
-    },
+    { $match: { "items.productId": { $ne: null } } },
     {
       $group: {
         _id: {
-          article: "$article",
-          categoryCode: "$categoryCode",
-          color: "$color",
-          size: "$size",
-          type: "$type",
-          quality: "$quality",
+          productId: "$items.productId",
+          categoryId: "$items.categoryId",
         },
-        cartQty: { $sum: "$quantity" },
+        cartQty: { $sum: { $ifNull: ["$items.quantity", 0] } },
       },
     },
   ]);
@@ -193,28 +214,14 @@ const wishlistAgg = await Wishlist.aggregate([
     }
   },
   { $unwind: "$WishList" },
-  {
-    $project: {
-      article: "$WishList.article",
-      categoryCode: "$WishList.categoryCode",
-      color: "$WishList.color",
-      size: "$WishList.size",
-      type: "$WishList.type",
-      quality: "$WishList.quality",
-      quantity: { $ifNull: ["$WishList.quantity", 0] }
-    }
-  },
+  { $match: { "WishList.productId": { $ne: null } } },
   {
     $group: {
       _id: {
-        article: "$article",
-        categoryCode: "$categoryCode",
-        color: "$color",
-        size: "$size",
-        type: "$type",
-        quality: "$quality"
+        productId: "$WishList.productId",
+        categoryId: "$WishList.categoryId",
       },
-      wishlistQty: { $sum: "$quantity" }
+      wishlistQty: { $sum: { $ifNull: ["$WishList.quantity", 0] } }
     }
   }
 ]);
@@ -225,8 +232,8 @@ const wishlistAgg = await Wishlist.aggregate([
     MERGE ALL DATA
      =============================== */
   const combinedMap = {};
-  const normalizeKey = o =>
-    `${String(o.article).toLowerCase()}_${String(o.categoryCode).toLowerCase()}_${String(o.color).toLowerCase()}_${String(o.size).toLowerCase()}_${o.type}_${o.quality}`;
+  // Group everything by the product + category combination ids
+  const normalizeKey = o => `${String(o.productId)}_${String(o.categoryId)}`;
 
   const addToMap = (item, field) => {
     const key = normalizeKey(item._id);
@@ -241,31 +248,31 @@ const wishlistAgg = await Wishlist.aggregate([
   wishlistAgg.forEach(i => addToMap(i, "wishlistQty"));
 
   /* ===============================
-     6️⃣ PRODUCT IMAGES
+     6️⃣ PRODUCT / CATEGORY DETAILS (for display)
      =============================== */
-  const allKeys = Object.keys(combinedMap);
-  const products = await Product.find({}).select("article articleCode category");
-allKeys.forEach(key => {
-  const q = combinedMap[key];
-  const [article, categoryCode, color, size] = key.split("_");
-  const prod = products.find(p =>
-    String(p.article).toLowerCase() === article &&
-    p.category.some(c =>
-      String(c.categoryCode).toLowerCase() === categoryCode &&
-      String(c.color).toLowerCase() === color &&
-      String(c.size).toLowerCase() === size
-    )
-  );
+  const productIds = [
+    ...new Set(
+      Object.values(combinedMap)
+        .map(q => q._id.productId && String(q._id.productId))
+        .filter(Boolean)
+    ),
+  ];
+  const products = await Product.find({ _id: { $in: productIds } }).select("article category");
+  const productMap = {};
+  products.forEach(p => { productMap[String(p._id)] = p; });
 
-  const matchedCategory = prod?.category?.find(c =>
-    String(c.categoryCode).toLowerCase() === categoryCode &&
-    String(c.color).toLowerCase() === color &&
-    String(c.size).toLowerCase() === size
-  );
-
-  q.image = matchedCategory?.image || [];
-  q.articleCode = matchedCategory?.articleCode || "";
-});
+  Object.values(combinedMap).forEach(q => {
+    const prod = productMap[String(q._id.productId)];
+    const cat = prod?.category?.find(c => String(c._id) === String(q._id.categoryId));
+    q.article = prod?.article;
+    q.categoryCode = cat?.categoryCode;
+    q.color = cat?.color;
+    q.size = cat?.size;
+    q.type = Array.isArray(cat?.type) ? cat.type[0] : cat?.type;
+    q.quality = Array.isArray(cat?.quality) ? cat.quality[0] : cat?.quality;
+    q.image = cat?.image || [];
+    q.articleCode = cat?.articleCode || "";
+  });
 
 
   /* ===============================
@@ -274,12 +281,14 @@ allKeys.forEach(key => {
   const result = Object.values(combinedMap).map(q => {
     const total = q.stockQty + q.productionQty - q.orderQty - q.cartQty - q.wishlistQty;
     return {
-      article: q._id.article,
-      categoryCode: q._id.categoryCode,
-      color: q._id.color,
-      size: q._id.size,
-      type: q._id.type,
-      quality: q._id.quality,
+      productId: q._id.productId,
+      categoryId: q._id.categoryId,
+      article: q.article,
+      categoryCode: q.categoryCode,
+      color: q.color,
+      size: q.size,
+      type: q.type,
+      quality: q.quality,
       articleCode: q.articleCode,
       Warehouse_Qty: q.stockQty,
       Production_Qty: q.productionQty,
@@ -425,7 +434,7 @@ exports.AddOrdertoCart = async ({ customer, location, items, schemesId, createdB
   // 4️⃣ Stock lookup map
   const stockMap = {};
   aggregatedStock.forEach(stock => {
-    const key = `${stock.article}_${stock.categoryCode}_${stock.color}_${stock.size}_${stock.type}_${stock.quality}`;
+    const key = `${stock.productId}_${stock.categoryId}`;
     stockMap[key] = stock.Total_Available || 0;
   });
 
@@ -458,6 +467,7 @@ const productRecord = await Product.findOne({
 
 let imageUrl = null;
 let dbarticleocode = null;
+let matchedCategoryId = null;
 if (productRecord && productRecord.category?.length > 0) {
   // Find the exact category within the array
   const matchedCategory = productRecord.category.find(cat =>
@@ -469,13 +479,20 @@ if (productRecord && productRecord.category?.length > 0) {
   if (matchedCategory) {
     imageUrl = matchedCategory.image[0];
     dbarticleocode = matchedCategory.articleCode;
+    matchedCategoryId = matchedCategory._id;
   }
 }
 
-const itemWithImage = { ...item,articleCode: dbarticleocode, image: imageUrl ? [imageUrl] : [] };
+const itemWithImage = {
+  ...item,
+  productId: productRecord?._id,
+  categoryId: matchedCategoryId,
+  articleCode: dbarticleocode,
+  image: imageUrl ? [imageUrl] : [],
+};
 
 
-    const key = `${item.article}_${item.categoryCode}_${item.color}_${item.size}_${item.type}_${item.quality}`;
+    const key = `${productRecord?._id}_${matchedCategoryId}`;
     const availableQty = stockMap[key] ?? 0;
     if (availableQty > 0 && item.quantity <= availableQty) {
       confirmedOrderItems.push(itemWithImage);
@@ -508,7 +525,10 @@ const itemWithImage = { ...item,articleCode: dbarticleocode, image: imageUrl ? [
 
   if (scheme) populateQuery = populateQuery.populate("scheme");
 
-  const populatedOrder = await populateQuery;
+  const populatedOrder = await populateQuery.lean();
+
+  // Resolve article/category on items + WishList from productId/categoryId
+  await enrichOrdersWithProductDetails([populatedOrder]);
 
   // ✅ Return only data
   return populatedOrder;
@@ -537,6 +557,8 @@ exports.getOrdersatCart = async (filter = {}, page = 1, limit = 10) => {
       .lean(), // 🔥 important for formatting
     Cart.countDocuments(query),
   ]);
+
+  await enrichOrdersWithProductDetails(sellorder);
 
   // ✅ Add created date & time (hours)
   const formattedOrders = sellorder.map(order => {
@@ -627,8 +649,7 @@ exports.getOrders = async (filter = {}, page = 1, limit = 10, search = "") => {
 
     query.$or = [
       { salesOrderNo: { $regex: regex } },
-      { "customer.name": { $regex: regex } }, 
-      { "items.article": { $regex: regex } }
+      { "customer.name": { $regex: regex } },
     ];
   }
 
@@ -666,6 +687,8 @@ exports.getOrders = async (filter = {}, page = 1, limit = 10, search = "") => {
     return { ...order, orderTotalQty, numOfDispatchedQty: scannedQty, scanPercent };
   });
 
+  await enrichOrdersWithProductDetails(enrichedOrders);
+
   return {
     sellorder: enrichedOrders,
     pagination: {
@@ -688,9 +711,10 @@ exports.getApprovedOrders = async (filter = {}, page, limit) => {
   console.log("query",query);
   
   const [sellorder, totalItems] = await Promise.all([
-    SellOrder.find(query).populate("customer", "name").skip(skip).limit(limit),
+    SellOrder.find(query).populate("customer", "name").skip(skip).limit(limit).lean(),
     SellOrder.countDocuments(query),
   ]);
+  await enrichOrdersWithProductDetails(sellorder);
   const totalPages = Math.ceil(totalItems / limit);
   return {
     sellorder,
@@ -741,6 +765,8 @@ exports.getCustomerWithOrders = async (customerId, page = 1, limit = 10, search 
     SellOrder.countDocuments({ customer: customer._id, ...searchFilter })
   ]);
 
+  await enrichOrdersWithProductDetails(orders);
+
   return {
     ...customer,
     orders,
@@ -756,7 +782,9 @@ exports.getCustomerWithOrders = async (customerId, page = 1, limit = 10, search 
 
 //Get single Order by ID
 exports.getOrderById = async (id) => {
-  return await SellOrder.findById(id).populate("customer","name");
+  const order = await SellOrder.findById(id).populate("customer","name").lean();
+  if (order) await enrichOrdersWithProductDetails([order]);
+  return order;
 };
 
 //Update Order by ID
@@ -783,20 +811,25 @@ exports.getWishlistItems = async (filter = {}, page = 1, limit = 10, search = ""
 
   // Fetch Cart wishlist items
   let cartOrders = await Cart.find(query)
-    .select("salesOrderNo customer article WishList createdBy createdAt")
+    .select("salesOrderNo customer WishList createdBy createdAt")
     .populate("customer", "name")
     .populate("createdBy", "name email")
-    .sort({ createdAt: -1 });
+    .sort({ createdAt: -1 })
+    .lean();
 
   // Fetch SellOrder wishlist items
   let sellOrders = await SellOrder.find(query)
-    .select("salesOrderNo customer article WishList createdBy createdAt")
+    .select("salesOrderNo customer WishList createdBy createdAt")
     .populate("customer", "name")
     .populate("createdBy", "name email")
-    .sort({ createdAt: -1 });
+    .sort({ createdAt: -1 })
+    .lean();
 
   // --- Merge both ---
   let allOrders = [...cartOrders, ...sellOrders];
+
+  // Resolve article/category on WishList items from productId/categoryId
+  await enrichOrdersWithProductDetails(allOrders);
 
   // --- Single Search Function ---
   const applySearch = (items, searchText) => {
@@ -1059,10 +1092,34 @@ exports.reverseDelivery = async (id, payload) => {
     throw new Error("Only orders with DELIVERED status can be reversed");
   }
 
-  const target = normalizeKey({ article, categoryCode, color, size, type, quality });
-  const itemIndex = order.items.findIndex((it) => normalizeKey(it) === target);
+  // Resolve the catalog product + category combo from the payload
+  const productByArticle = await Product.findOne({ article });
+  if (!productByArticle) {
+    throw new Error(`Article '${article}' not found in product catalog.`);
+  }
+  const matchedCategory = (productByArticle.category || []).find(
+    (cat) =>
+      String(cat.categoryCode) === String(categoryCode) &&
+      String(cat.color).toLowerCase() === String(color).toLowerCase() &&
+      String(cat.size).toLowerCase() === String(size).toLowerCase()
+  );
+  if (!matchedCategory) {
+    throw new Error("Matching category combination not found in product catalog.");
+  }
+  const productId = productByArticle._id;
+  const categoryId = matchedCategory._id;
+  const selectedImage =
+    Array.isArray(matchedCategory.image) && matchedCategory.image.length > 0
+      ? matchedCategory.image[0]
+      : null;
+
+  const itemIndex = order.items.findIndex(
+    (it) =>
+      String(it.productId) === String(productId) &&
+      String(it.categoryId) === String(categoryId)
+  );
   if (itemIndex === -1) {
-    throw new Error("Matching article not found in this order");
+    throw new Error("Matching product not found in this order");
   }
 
   const item = order.items[itemIndex];
@@ -1089,21 +1146,6 @@ exports.reverseDelivery = async (id, payload) => {
 
   await order.save();
 
-  // Resolve product image for the new Production
-  const productByArticle = await Product.findOne({ article });
-  let selectedImage = null;
-  if (productByArticle && Array.isArray(productByArticle.category)) {
-    const matchedCategory = productByArticle.category.find(
-      (cat) =>
-        String(cat.categoryCode) === String(categoryCode) &&
-        String(cat.color).toLowerCase() === String(color).toLowerCase() &&
-        String(cat.size).toLowerCase() === String(size).toLowerCase()
-    );
-    if (matchedCategory && Array.isArray(matchedCategory.image) && matchedCategory.image.length > 0) {
-      selectedImage = matchedCategory.image[0];
-    }
-  }
-
   // Generate next RPN_XX (RPN_01, RPN_02, ... padded to 2 digits, grows past 99)
   const getNextReturnProductionNumber = async () => {
     const last = await Production.aggregate([
@@ -1129,17 +1171,10 @@ exports.reverseDelivery = async (id, payload) => {
   const production = await Production.create({
     factory,
     productionNo,
-    article,
+    productId,
+    categoryId,
     productionDate: productionDate || new Date(),
     productionQuantity: returnQuantity,
-    category: {
-      categoryCode,
-      color,
-      size,
-      type,
-      quality,
-      image: selectedImage,
-    },
   });
 
   // Generate QR + bypass factory scans so warehouse can scan directly

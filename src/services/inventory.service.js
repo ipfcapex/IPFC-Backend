@@ -6,6 +6,7 @@ const { Production } = require("../models");
 const { Stock } = require("../models");
 const { Order } = require("../models");
 const { User } = require("../models");
+const { Product } = require("../models");
 const { sendNotification } = require("./notificationService");
 
 exports.getAllStockQuantities = async () => {
@@ -14,37 +15,42 @@ exports.getAllStockQuantities = async () => {
     const stockData = await Stock.aggregate([
       // Breaks each element in the 'stockdata' array into individual documents
       { $unwind: "$stockdata" },
+      { $match: { "stockdata.productId": { $ne: null } } },
       {
-        // Groups by article, categoryCode, and other attributes to calculate total quantity
+        // Group by the product + category combination ids
         $group: {
           _id: {
-            article: "$stockdata.article",
-            categoryCode: "$stockdata.categoryCode",
-            color: "$stockdata.color",
-            size: "$stockdata.size",
-            type: "$stockdata.type",
-            quality: "$stockdata.quality"
+            productId: "$stockdata.productId",
+            categoryId: "$stockdata.categoryId"
           },
-          // Sum up the quantity for each group
           availableQuantity: { $sum: "$stockdata.quantity" }
-        }
-      },
-      // Format the output by flattening _id fields into top-level fields
-      {
-        $project: {
-          _id: 0,
-          article: "$_id.article",
-          categoryCode: "$_id.categoryCode",
-          color: "$_id.color",
-          size: "$_id.size",
-          type: "$_id.type",
-          quality: "$_id.quality",
-          availableQuantity: 1
         }
       }
     ]);
 
-    return stockData;
+    // Resolve article/category details from Product for display
+    const ids = [
+      ...new Set(stockData.map(s => s._id.productId && String(s._id.productId)).filter(Boolean)),
+    ];
+    const products = await Product.find({ _id: { $in: ids } }).select("article category");
+    const pmap = {};
+    products.forEach(p => { pmap[String(p._id)] = p; });
+
+    return stockData.map(s => {
+      const prod = pmap[String(s._id.productId)];
+      const cat = prod?.category?.find(c => String(c._id) === String(s._id.categoryId));
+      return {
+        productId: s._id.productId,
+        categoryId: s._id.categoryId,
+        article: prod?.article,
+        categoryCode: cat?.categoryCode,
+        color: cat?.color,
+        size: cat?.size,
+        type: Array.isArray(cat?.type) ? cat.type[0] : cat?.type,
+        quality: Array.isArray(cat?.quality) ? cat.quality[0] : cat?.quality,
+        availableQuantity: s.availableQuantity
+      };
+    });
   } catch (error) {
     console.error("Error aggregating stock:", error);
     return { success: false, error: "Error fetching stock data" };
@@ -227,43 +233,74 @@ exports.getAllStockQuantities = async () => {
 exports.getStockByWarehouseAndFactory = async (page = 1, limit = 10, search = "") => {
   const stockData = await Stock.find()
     .populate("factory")
-    .populate("warehouse");
+    .populate("warehouse")
+    .populate({
+      path: "stockdata.productId",
+      model: "Product"
+    });
 
-  const productionData = await Production.find().populate("factory");
+  const productionData = await Production.find()
+    .populate("factory")
+    .populate({
+      path: "productId",
+      model: "Product"
+    });
 
   // Map warehouse stock
-  const stockList = stockData.map(s => ({
-    article: s.stockdata?.[0]?.article || "N/A",
-    categoryCode: s.stockdata?.[0]?.categoryCode || "N/A",
-    color: s.stockdata?.[0]?.color || "N/A",
-    size: s.stockdata?.[0]?.size || "N/A",
-    type: s.stockdata?.[0]?.type || "N/A",
-    quality: s.stockdata?.[0]?.quality || "N/A",
-    factory: s.factory?.name || "N/A",
-    warehouse: s.warehouse?.name || "N/A",
-    stockAtFactory: 0,
-    stockAtWarehouse:
-      s.dispatchStock != null && s.dispatchStock !== undefined
-        ? Math.max(s.toatalQuantity - s.dispatchStock, 0)
-        : s.toatalQuantity || 0,
-  }));
+  const stockList = stockData.map(s => {
+    const firstStockItem = s.stockdata?.[0];
+    const product = firstStockItem?.productId;
+    
+    let category = null;
+    if (product && Array.isArray(product.category) && firstStockItem?.categoryId) {
+      category = product.category.find(
+        (c) => c._id.toString() === firstStockItem.categoryId.toString()
+      );
+    }
+
+    return {
+      article: product?.article || "N/A",
+      categoryCode: category?.categoryCode || "N/A",
+      color: category?.color || "N/A",
+      size: category?.size || "N/A",
+      type: category?.type || "N/A",
+      quality: category?.quality || "N/A",
+      factory: s.factory?.name || "N/A",
+      warehouse: s.warehouse?.name || "N/A",
+      stockAtFactory: 0,
+      stockAtWarehouse:
+        s.dispatchStock != null && s.dispatchStock !== undefined
+          ? Math.max(s.toatalQuantity - s.dispatchStock, 0)
+          : s.toatalQuantity || 0,
+    };
+  });
 
   // Map factory stock
-  const productionList = productionData.map(p => ({
-    article: p.article,
-    categoryCode: p.category.categoryCode || "N/A",
-    color: p.category.color || "N/A",
-    size: p.category.size || "N/A",
-    type: p.category.type || "N/A",
-    quality: p.category.quality || "N/A",
-    factory: p.factory?.name || "N/A",
-    warehouse: "N/A",
-    stockAtFactory:
-      p.dispatchedQuantity != null && p.dispatchedQuantity !== undefined
-        ? Math.max(p.stockinQuantity - p.dispatchedQuantity, 0)
-        : p.stockinQuantity,
-    stockAtWarehouse: 0,
-  }));
+  const productionList = productionData.map(p => {
+    const product = p.productId;
+    let category = null;
+    if (product && Array.isArray(product.category) && p.categoryId) {
+      category = product.category.find(
+        (c) => c._id.toString() === p.categoryId.toString()
+      );
+    }
+
+    return {
+      article: product?.article || p.article || "N/A",
+      categoryCode: category?.categoryCode || "N/A",
+      color: category?.color || "N/A",
+      size: category?.size || "N/A",
+      type: category?.type || "N/A",
+      quality: category?.quality || "N/A",
+      factory: p.factory?.name || "N/A",
+      warehouse: "N/A",
+      stockAtFactory:
+        p.dispatchedQuantity != null && p.dispatchedQuantity !== undefined
+          ? Math.max(p.stockinQuantity - p.dispatchedQuantity, 0)
+          : p.stockinQuantity,
+      stockAtWarehouse: 0,
+    };
+  });
 
   // ✅ Merge both lists
   const mergedMap = {};
@@ -411,6 +448,41 @@ sendNotification("inventoryRejected", notification);
       }
     });
 
+    // Resolve and assign productId & categoryId for each item before saving
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const productRecord = await Product.findOne({
+        article: item.article,
+        "category.categoryCode": item.categoryCode,
+        "category.color": { $regex: new RegExp(`^${item.color}$`, "i") },
+        "category.size": { $regex: new RegExp(`^${item.size}$`, "i") },
+      });
+
+      let matchedCategoryId = null;
+      let dbarticleocode = null;
+      let imageUrl = null;
+      if (productRecord && productRecord.category?.length > 0) {
+        const matchedCategory = productRecord.category.find(cat =>
+          cat.categoryCode === item.categoryCode &&
+          cat.color.toLowerCase() === item.color.toLowerCase() &&
+          cat.size.toLowerCase() === item.size.toLowerCase()
+        );
+
+        if (matchedCategory) {
+          imageUrl = matchedCategory.image?.[0] || null;
+          dbarticleocode = matchedCategory.articleCode;
+          matchedCategoryId = matchedCategory._id;
+        }
+      }
+
+      item.productId = productRecord?._id || item.productId;
+      item.categoryId = matchedCategoryId || item.categoryId;
+      if (dbarticleocode) item.articleCode = dbarticleocode;
+      if (imageUrl && (!item.image || item.image.length === 0)) {
+        item.image = [imageUrl];
+      }
+    }
+
     // Save order with warehouse assignment
     order.items = items;
     order.inventoryManagerApproval = "APPROVED";
@@ -515,43 +587,74 @@ sendNotification("inventoryRejected", notification);
 exports.getStockByWarehouseAndFactory2 = async (page = 1, limit = 5, search = "") => {
   const stockData = await Stock.find()
     .populate("factory")
-    .populate("warehouse");
+    .populate("warehouse")
+    .populate({
+      path: "stockdata.productId",
+      model: "Product"
+    });
 
-  const productionData = await Production.find().populate("factory");
+  const productionData = await Production.find()
+    .populate("factory")
+    .populate({
+      path: "productId",
+      model: "Product"
+    });
 
   // Map warehouse stock
-  const stockList = stockData.map(s => ({
-    article: s.stockdata?.[0]?.article || "N/A",
-    categoryCode: s.stockdata?.[0]?.categoryCode || "N/A",
-    color: s.stockdata?.[0]?.color || "N/A",
-    size: s.stockdata?.[0]?.size || "N/A",
-    type: s.stockdata?.[0]?.type || "N/A",
-    quality: s.stockdata?.[0]?.quality || "N/A",
-    factory: s.factory?.name || "N/A",
-    warehouse: s.warehouse?.name || "N/A",
-    stockAtFactory: 0,
-    stockAtWarehouse:
-      s.dispatchStock != null && s.dispatchStock !== undefined
-        ? Math.max(s.toatalQuantity - s.dispatchStock, 0)
-        : s.toatalQuantity || 0,
-  }));
+  const stockList = stockData.map(s => {
+    const firstStockItem = s.stockdata?.[0];
+    const product = firstStockItem?.productId;
+    
+    let category = null;
+    if (product && Array.isArray(product.category) && firstStockItem?.categoryId) {
+      category = product.category.find(
+        (c) => c._id.toString() === firstStockItem.categoryId.toString()
+      );
+    }
+
+    return {
+      article: product?.article || "N/A",
+      categoryCode: category?.categoryCode || "N/A",
+      color: category?.color || "N/A",
+      size: category?.size || "N/A",
+      type: category?.type || "N/A",
+      quality: category?.quality || "N/A",
+      factory: s.factory?.name || "N/A",
+      warehouse: s.warehouse?.name || "N/A",
+      stockAtFactory: 0,
+      stockAtWarehouse:
+        s.dispatchStock != null && s.dispatchStock !== undefined
+          ? Math.max(s.toatalQuantity - s.dispatchStock, 0)
+          : s.toatalQuantity || 0,
+    };
+  });
 
   // Map factory stock
-  const productionList = productionData.map(p => ({
-    article: p.article,
-    categoryCode: p.category.categoryCode || "N/A",
-    color: p.category.color || "N/A",
-    size: p.category.size || "N/A",
-    type: p.category.type || "N/A",
-    quality: p.category.quality || "N/A",
-    factory: p.factory?.name || "N/A",
-    warehouse: "N/A",
-    stockAtFactory:
-      p.dispatchedQuantity != null && p.dispatchedQuantity !== undefined
-        ? Math.max(p.stockinQuantity - p.dispatchedQuantity, 0)
-        : p.stockinQuantity,
-    stockAtWarehouse: 0,
-  }));
+  const productionList = productionData.map(p => {
+    const product = p.productId;
+    let category = null;
+    if (product && Array.isArray(product.category) && p.categoryId) {
+      category = product.category.find(
+        (c) => c._id.toString() === p.categoryId.toString()
+      );
+    }
+
+    return {
+      article: product?.article || p.article || "N/A",
+      categoryCode: category?.categoryCode || "N/A",
+      color: category?.color || "N/A",
+      size: category?.size || "N/A",
+      type: category?.type || "N/A",
+      quality: category?.quality || "N/A",
+      factory: p.factory?.name || "N/A",
+      warehouse: "N/A",
+      stockAtFactory:
+        p.dispatchedQuantity != null && p.dispatchedQuantity !== undefined
+          ? Math.max(p.stockinQuantity - p.dispatchedQuantity, 0)
+          : p.stockinQuantity,
+      stockAtWarehouse: 0,
+    };
+  });
 
   // ✅ Merge both lists
   const mergedMap = {};

@@ -30,30 +30,8 @@ const locationSchema = new mongoose.Schema({
 });
 
 const qrCodeEntrySchema = new mongoose.Schema({
-  article: {
-    type: mongoose.Schema.Types.Mixed,
-    required: true
-  },
-  categoryCode: {
-    type: mongoose.Schema.Types.Mixed,
-    required: true
-  },
-  color: {
-    type: String,
-    required: true
-  },
-  size: {
-    type: String,
-    required: true
-  },
-  type: {
-    type: String,
-    required: true
-  },
-  quality: {
-    type: String,
-    required: true
-  },
+  productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product" },
+  categoryId: { type: mongoose.Schema.Types.ObjectId },
   quantity: {
     type: Number,
     default: 0
@@ -67,30 +45,8 @@ const qrCodeEntrySchema = new mongoose.Schema({
   _id: false
 });
 const Wishlistitems = new mongoose.Schema({
-  article: {
-    type: mongoose.Schema.Types.Mixed,
-
-  },
-  categoryCode: {
-    type: mongoose.Schema.Types.Mixed,
-
-  },
-  color: {
-    type: String,
-
-  },
-  size: {
-    type: String,
-
-  },
-  type: {
-    type: String,
-
-  },
-  quality: {
-    type: String,
-
-  },
+  productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product" },
+  categoryId: { type: mongoose.Schema.Types.ObjectId },
   quantity: {
     type: Number,
     default: 0

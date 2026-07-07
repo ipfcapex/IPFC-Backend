@@ -1,6 +1,7 @@
 const { WishlistService } = require('../services'); // your service function
 const { Customer, Product, Wishlist, Schemes } = require("../models");
 const mongoose = require("mongoose");
+const { enrichOrdersWithProductDetails } = require("../services/salesOrder.service");
 
 // ------------------------
 // Add items to Wishlist
@@ -90,8 +91,6 @@ exports.getWishlistBySalesperson = async (req, res) => {
 
       query.$or = [
         { description: regex },
-        { "items.article": regex },
-        { "items.categoryCode": regex }
       ];
     }
 
@@ -103,9 +102,12 @@ exports.getWishlistBySalesperson = async (req, res) => {
         .populate("scheme", "name")
         .sort({ updatedAt: -1 })
         .skip(skip)
-        .limit(limit),
+        .limit(limit)
+        .lean(),
       Wishlist.countDocuments(query)
     ]);
+
+    await enrichOrdersWithProductDetails(wishlists);
 
     return res.status(200).json({
       success: true,

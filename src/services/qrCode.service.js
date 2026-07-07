@@ -2,6 +2,7 @@ const QRCode = require("qrcode");
 const QRCODE = require("../models/qrCode.model");
 // const Production = require('../models/production.model');
 const Product = require("../models/production.model");
+const { Product: RealProduct } = require("../models");
 const { log } = require("winston");
 const { v4: uuidv4 } = require("uuid"); // for unique QR ID
 const { Warehouse } = require("../models");
@@ -14,9 +15,8 @@ exports.addQrCodesByArticle = async ({ factory, productIds, productionNo, wareho
   try {
     const allQrCodes = [];
 
-    // Fetch all products
+    // Fetch all products (Production is identified by productionNo; article is no longer stored on it)
     const products = await Product.find({
-      article: { $in: productIds },
       factory: factory,
       productionNo: productionNo
     });
@@ -169,10 +169,9 @@ exports.generateQrCodesByArticle = async ({
       throw new Error("Warehouse not found for the given ID");
     }
 
-    // Fetch products from DB to get actual productionQuantity
-    const productArticles = productsInput.map(p => p.article);
+    // Fetch products from DB to get actual productionQuantity.
+    // Production is uniquely identified by productionNo (article is no longer stored on it).
     const productsFromDB = await Product.find({
-      article: { $in: productArticles },
       productionNo,
       factory
     });
@@ -183,9 +182,11 @@ exports.generateQrCodesByArticle = async ({
 
     // Generate QR codes
     for (const inputProduct of productsInput) {
-      const dbProduct = productsFromDB.find(p => p.article === inputProduct.article);
+      const dbProduct =
+        productsFromDB.find(p => p.productionNo === productionNo) ||
+        productsFromDB[0];
       if (!dbProduct) {
-        throw new Error(`Product ${inputProduct.article} not found in this production.`);
+        throw new Error(`Production ${productionNo} not found.`);
       }
 
       const quantity = dbProduct.productionQuantity || 0;
@@ -198,31 +199,20 @@ exports.generateQrCodesByArticle = async ({
         const qrId = "QR-" + uuidv4();
 
         const qrPayload = {
-          article: inputProduct.article,
-          factory_name,
+          factory,
           warehouse: warehouses._id,
-          warehouseName: warehouses.name,
+          productId: dbProduct.productId,
+          categoryId: dbProduct.categoryId,
           productionNo,
           serial: i + 1,
-          qrId,
-          category: {
-            categoryCode: inputProduct.categoryCode,
-            color: inputProduct.color,
-            size: inputProduct.size,
-            type: inputProduct.type,
-            quality: inputProduct.quality
-          }
+          qrId
         };
 
         const qrBase64 = await QRCode.toDataURL(JSON.stringify(qrPayload));
 
         allQrCodes.push({
-          article: inputProduct.article,
-          categoryCode: inputProduct.categoryCode || "NA",
-          color: inputProduct.color || "NA",
-          size: inputProduct.size || "NA",
-          type: inputProduct.type || "NA",
-          quality: inputProduct.quality || "NA",
+          productId: dbProduct.productId,
+          categoryId: dbProduct.categoryId,
           quantity: "1", // each QR represents 1 unit
           qrId,
           qrData: qrBase64
@@ -238,13 +228,6 @@ exports.generateQrCodesByArticle = async ({
       warehouse,
       products: productsInput.map(p => p.article),
       status: "Dispatch",
-      category: productsInput.map(p => ({
-        categoryCode: p.categoryCode,
-        color: p.color,
-        size: p.size,
-        type: p.type,
-        quality: p.quality
-      })),
       qrCodes: allQrCodes
     });
 
@@ -326,27 +309,22 @@ exports.generateReturnQrAndBypassFactoryScan = async ({
   for (let i = 0; i < qty; i++) {
     const qrId = "QR-" + uuidv4();
     const qrPayload = {
-      article,
-      factory_name: factoryDoc.name,
+      factory,
       warehouse: warehouseDoc._id,
-      warehouseName: warehouseDoc.name,
+      productId: production.productId,
+      categoryId: production.categoryId,
       productionNo,
       serial: i + 1,
       qrId,
       quantity: 1,
-      category: categoryData,
       factoryScan: true,
       factoryinScan: true,
     };
     const qrBase64 = await QRCode.toDataURL(JSON.stringify(qrPayload));
 
     allQrCodes.push({
-      article,
-      categoryCode: categoryData.categoryCode || "NA",
-      color: categoryData.color || "NA",
-      size: categoryData.size || "NA",
-      type: categoryData.type || "NA",
-      quality: categoryData.quality || "NA",
+      productId: production.productId,
+      categoryId: production.categoryId,
       quantity: "1",
       qrId,
       qrData: qrBase64,
@@ -362,7 +340,6 @@ exports.generateReturnQrAndBypassFactoryScan = async ({
     warehouse,
     products: [article],
     status: "Dispatch",
-    category: [categoryData],
     qrCodes: allQrCodes,
   });
 
@@ -445,23 +422,31 @@ exports.stockTransferWithinWarehouses = async ({
     quality: category.quality,
   };
 
-  // 1️⃣ Check stock in source warehouse
+  // Resolve Product Document matching the specified article
+  const productDoc = await RealProduct.findOne({ article: article });
+  if (!productDoc) {
+    throw new Error(`No product found matching the article: ${article}`);
+  }
+
+  // Production holds the productId/categoryId now stored on each QR entry
+  const productionDoc = await Product.findOne({ productionNo });
+
+  // 1️⃣ Check stock in source warehouse (productionNo uniquely identifies the product)
   const fromStock = await Stock.findOne({
     warehouse: fromWarehouse,
-    "stockdata.article": article,
     "stockdata.productionNo": productionNo,
   });
 
   if (!fromStock) {
     throw new Error(
-      "No stock found in the source warehouse for the given article and production number."
+      "No stock found in the source warehouse for the given production number."
     );
   }
 
   const stockItemIndex = fromStock.stockdata.findIndex(
-    (s) => s.article === article && s.productionNo === productionNo
+    (s) => s.productId.toString() === productDoc._id.toString() && s.productionNo === productionNo
   );
-  if (stockItemIndex === -1) throw new Error("No matching stock item found.");
+  if (stockItemIndex === -1) throw new Error("No matching stock item found in source stock.");
 
   const stockItem = fromStock.stockdata[stockItemIndex];
 
@@ -477,7 +462,6 @@ exports.stockTransferWithinWarehouses = async ({
   const qrDoc = await QRCODE.findOne({
     warehouse: fromWarehouse,
     productionNo,
-    products: article,
   }).populate("warehouse", "name location");
   if (!qrDoc) throw new Error("No QR document found for given productionNo and article.");
 
@@ -519,26 +503,21 @@ exports.stockTransferWithinWarehouses = async ({
   for (let i = 0; i < quantity; i++) {
     const qrId = "QR-" + uuidv4();
     const qrPayload = {
-      article,
-      factory_name,
+      factory,
       warehouse: toWarehouseDoc._id,
-      warehouseName: toWarehouseDoc.name,
+      productId: productionDoc?.productId,
+      categoryId: productionDoc?.categoryId,
       productionNo,
       serial: i + 1,
       qrId,
-      category: categoryData, // ✅ use input directly
       factoryScan: true,
     };
     // console.log("qrPayload", qrPayload)
     const qrBase64 = await QRCode.toDataURL(JSON.stringify(qrPayload));
 
     allQrCodes.push({
-      article,
-      categoryCode: categoryData.categoryCode,
-      color: categoryData.color,
-      size: categoryData.size,
-      type: categoryData.type,
-      quality: categoryData.quality,
+      productId: productionDoc?.productId,
+      categoryId: productionDoc?.categoryId,
       quantity: "1",
       qrId,
       qrData: qrBase64,
@@ -551,7 +530,6 @@ exports.stockTransferWithinWarehouses = async ({
   let toQrDoc = await QRCODE.findOne({
     warehouse: toWarehouse,
     factory,
-    products: article,
     productionNo,
   });
 
@@ -562,7 +540,6 @@ exports.stockTransferWithinWarehouses = async ({
       factory,
       factory_name,
       productionNo,
-      products: [article],
       qrCodes: allQrCodes,
     });
     qrActionMessage = "New QR document created for this warehouse.";
@@ -578,11 +555,10 @@ exports.stockTransferWithinWarehouses = async ({
   // 8️⃣ Create or update Stock entry for toWarehouse
   let stockActionMessage = "";
 
-  // 8a. Find existing stock for the same warehouse, factory, article, productionNo
+  // 8a. Find existing stock for the same warehouse, factory, productionNo
   let toStock = await Stock.findOne({
     warehouse: toWarehouse,
     factory,
-    "stockdata.article": article,
     "stockdata.productionNo": productionNo,
   }).populate("warehouse", "name location")
 
@@ -598,12 +574,8 @@ exports.stockTransferWithinWarehouses = async ({
       isActive: true,
       stockdata: allQrCodes.map((qr) => ({
         productionNo,
-        article,
-        categoryCode: qr.categoryCode,
-        color: qr.color,
-        size: qr.size,
-        type: qr.type,
-        quality: qr.quality,
+        productId: qr.productId,
+        categoryId: qr.categoryId,
         quantity: Number(qr.quantity),
         qrData: qr.qrId,
         dispatched: false,
@@ -624,12 +596,8 @@ exports.stockTransferWithinWarehouses = async ({
     toStock.stockdata.push(
       ...allQrCodes.map((qr) => ({
         productionNo,
-        article,
-        categoryCode: qr.categoryCode,
-        color: qr.color,
-        size: qr.size,
-        type: qr.type,
-        quality: qr.quality,
+        productId: qr.productId,
+        categoryId: qr.categoryId,
         quantity: Number(qr.quantity),
         qrData: qr.qrId,
         dispatched: false,
@@ -661,13 +629,9 @@ exports.stockTransferWithinWarehouses = async ({
     createdInDestination: allQrCodes.map((q) => ({
       qrId: q.qrId,
       qrData: q.qrData,
-      article: q.article,
-      categoryCode: q.categoryCode,
+      productId: q.productId,
+      categoryId: q.categoryId,
       productionNo,
-      color: q.color,
-      size: q.size,
-      type: q.type,
-      quality: q.quality,
       quantity: q.quantity
     })),
 
@@ -718,7 +682,6 @@ exports.getAllFactoryScannedQrCodes = async ({ productionNo, type, page = 1, lim
         _id: "$productionNo",
         productionNo: { $first: "$productionNo" },
         factory: { $first: "$factory" },
-        factory_name: { $first: "$factory_name" },
         warehouses: { $addToSet: "$warehouse" },
         status: { $first: "$status" },
         firstCreatedAt: { $min: "$createdAt" },
@@ -748,11 +711,19 @@ exports.getAllFactoryScannedQrCodes = async ({ productionNo, type, page = 1, lim
       },
     },
     {
+      $lookup: {
+        from: "factories",
+        localField: "factory",
+        foreignField: "_id",
+        as: "factoryDetails",
+      },
+    },
+    {
       $project: {
         _id: 0,
         productionNo: 1,
         factory: 1,
-        factory_name: 1,
+        factory_name: { $arrayElemAt: ["$factoryDetails.name", 0] },
         warehouses: {
           $map: {
             input: "$warehouseDetails",
@@ -776,6 +747,163 @@ exports.getAllFactoryScannedQrCodes = async ({ productionNo, type, page = 1, lim
     pagination: {
       currentPage: page,
       totalPages,
+      totalItems,
+      limit,
+    },
+  };
+};
+
+// Get all warehouse stock-IN scanned QR codes (warehouseinScan: true), grouped by productionNo.
+exports.getAllWarehouseScannedQrCodes = async ({ productionNo, page = 1, limit = 10 } = {}) => {
+  page = Number(page) || 1;
+  limit = Number(limit) || 10;
+  const skip = (page - 1) * limit;
+
+  const docMatch = {};
+  if (productionNo) docMatch.productionNo = productionNo;
+
+  const basePipeline = [
+    { $match: docMatch },
+    { $unwind: "$qrCodes" },
+    { $match: { "qrCodes.warehouseinScan": true } },
+    {
+      $group: {
+        _id: { productionNo: "$productionNo", warehouse: "$warehouse" },
+        productionNo: { $first: "$productionNo" },
+        factory: { $first: "$factory" },
+        warehouse: { $first: "$warehouse" },
+        status: { $first: "$status" },
+        firstCreatedAt: { $min: "$createdAt" },
+        qrCodes: { $push: "$qrCodes" },
+        totalQrCodes: { $sum: 1 },
+      },
+    },
+    { $sort: { firstCreatedAt: -1 } },
+  ];
+
+  const [countRes] = await QRCODE.aggregate([...basePipeline, { $count: "total" }]);
+  const totalItems = countRes ? countRes.total : 0;
+
+  const data = await QRCODE.aggregate([
+    ...basePipeline,
+    { $skip: skip },
+    { $limit: limit },
+    {
+      $lookup: {
+        from: "warehouses",
+        localField: "warehouse",
+        foreignField: "_id",
+        as: "warehouseDetails",
+      },
+    },
+    {
+      $lookup: {
+        from: "factories",
+        localField: "factory",
+        foreignField: "_id",
+        as: "factoryDetails",
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        productionNo: 1,
+        factory: 1,
+        factory_name: { $arrayElemAt: ["$factoryDetails.name", 0] },
+        warehouse: { $arrayElemAt: ["$warehouseDetails", 0] },
+        status: 1,
+        createdAt: "$firstCreatedAt",
+        totalQrCodes: 1,
+        qrCodes: 1,
+      },
+    },
+  ]);
+
+  return {
+    success: true,
+    data,
+    pagination: {
+      currentPage: page,
+      totalPages: Math.ceil(totalItems / limit) || 0,
+      totalItems,
+      limit,
+    },
+  };
+};
+
+// Get all warehouse dispatch (stock-OUT) scanned QR codes (warehouseDispatch: true), grouped by productionNo + warehouse.
+exports.getAllWarehouseDispatchedQrCodes = async ({ productionNo, page = 1, limit = 10 } = {}) => {
+  page = Number(page) || 1;
+  limit = Number(limit) || 10;
+  const skip = (page - 1) * limit;
+
+  const docMatch = {};
+  if (productionNo) docMatch.productionNo = productionNo;
+
+  const basePipeline = [
+    { $match: docMatch },
+    { $unwind: "$qrCodes" },
+    { $match: { "qrCodes.warehouseDispatch": true } },
+    {
+      $group: {
+        _id: { productionNo: "$productionNo", warehouse: "$warehouse" },
+        productionNo: { $first: "$productionNo" },
+        factory: { $first: "$factory" },
+        warehouse: { $first: "$warehouse" },
+        status: { $first: "$status" },
+        firstCreatedAt: { $min: "$createdAt" },
+        qrCodes: { $push: "$qrCodes" },
+        totalQrCodes: { $sum: 1 },
+        orderNos: { $addToSet: "$qrCodes.ordNumScanFor" },
+      },
+    },
+    { $sort: { firstCreatedAt: -1 } },
+  ];
+
+  const [countRes] = await QRCODE.aggregate([...basePipeline, { $count: "total" }]);
+  const totalItems = countRes ? countRes.total : 0;
+
+  const data = await QRCODE.aggregate([
+    ...basePipeline,
+    { $skip: skip },
+    { $limit: limit },
+    {
+      $lookup: {
+        from: "warehouses",
+        localField: "warehouse",
+        foreignField: "_id",
+        as: "warehouseDetails",
+      },
+    },
+    {
+      $lookup: {
+        from: "factories",
+        localField: "factory",
+        foreignField: "_id",
+        as: "factoryDetails",
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        productionNo: 1,
+        factory: 1,
+        factory_name: { $arrayElemAt: ["$factoryDetails.name", 0] },
+        warehouse: { $arrayElemAt: ["$warehouseDetails", 0] },
+        status: 1,
+        createdAt: "$firstCreatedAt",
+        totalQrCodes: 1,
+        qrCodes: 1,
+      },
+    },
+  ]);
+
+  return {
+    success: true,
+    data,
+    pagination: {
+      currentPage: page,
+      totalPages: Math.ceil(totalItems / limit) || 0,
       totalItems,
       limit,
     },

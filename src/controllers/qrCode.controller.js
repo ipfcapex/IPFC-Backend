@@ -120,10 +120,35 @@ exports.getAllFactoryScannedQrCodes = async (req, res) => {
     res.status(200).json(result);
   } catch (error) {
     console.error("Error in getAllFactoryScannedQrCodes:", error);
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getAllWarehouseScannedQrCodes = async (req, res) => {
+  try {
+    const productionNo = req.query.productionNo || undefined;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+
+    const result = await qrService.getAllWarehouseScannedQrCodes({ productionNo, page, limit });
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("Error in getAllWarehouseScannedQrCodes:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getAllWarehouseDispatchedQrCodes = async (req, res) => {
+  try {
+    const productionNo = req.query.productionNo || undefined;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+
+    const result = await qrService.getAllWarehouseDispatchedQrCodes({ productionNo, page, limit });
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("Error in getAllWarehouseDispatchedQrCodes:", error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 

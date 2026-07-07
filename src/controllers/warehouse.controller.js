@@ -3,6 +3,7 @@ const { User } = require("../models")
 const { Warehouse } = require("../models")
 const { Customer } = require("../models")
 const { SellOrder } = require("../models")
+const { enrichOrdersWithProductDetails } = require("../services/salesOrder.service")
 
 
 exports.create = async (req, res, next) => {
@@ -138,19 +139,12 @@ exports.getOrderDatabyWH = async (req, res) => {
 
   query.$or = [
     { salesOrderNo: regex },
-    { items: { $elemMatch: { quality: regex } } },
-    { items: { $elemMatch: { color: regex } } },
-    { items: { $elemMatch: { type: regex } } },
-    { items: { $elemMatch: { article: regex } } }, 
     { "items.warehouses.warehouse": { $in: warehouseIds } },
     { customer: { $in: Customerids } }
   ];
 
   // Numeric fields
   if (numericSearch !== null) {
-    query.$or.push({ items: { $elemMatch: { article: numericSearch } } });
-    query.$or.push({ items: { $elemMatch: { size: numericSearch } } });
-    query.$or.push({ items: { $elemMatch: { categoryCode: numericSearch } } });
     query.$or.push({ "items.warehouses.quantity": numericSearch });
   }
 }
@@ -161,9 +155,13 @@ exports.getOrderDatabyWH = async (req, res) => {
         .populate("items.warehouses.warehouse customer createdBy", "name location")
         .sort({ createdAt: -1 })
         .skip(skip)
-        .limit(limit),
+        .limit(limit)
+        .lean(),
       SellOrder.countDocuments(query)
     ]);
+
+    // Resolve article/category on items from productId/categoryId
+    await enrichOrdersWithProductDetails(orders);
 
     // Flatten the items
     const flattened = [];

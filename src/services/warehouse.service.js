@@ -1,6 +1,7 @@
 const Warehouse = require('../models/warehouse.model');
 const Factory = require('../models/factory.model');
 const { Stock } = require("../models")
+const { Product } = require("../models")
 const mongoose = require("mongoose");
 
 exports.createWarehouse = async (data) => {
@@ -79,11 +80,7 @@ exports.getAggregatedStockByWarehouse = async (warehouse, page = 1, limit = 10, 
       const regex = new RegExp(search.trim(), "i"); // case-insensitive
       searchFilter = {
         $or: [
-          { "stockdata.article": regex },
-          { "stockdata.color": regex },
-          { "stockdata.size": regex },
-          { "stockdata.quality": regex },
-          { "stockdata.type": regex }
+          { "stockdata.productionNo": regex },
         ]
       };
     }
@@ -108,12 +105,8 @@ const pipeline = [
   {
     $group: {
       _id: {
-        article: "$stockdata.article",
-        categoryCode: "$stockdata.categoryCode",
-        color: "$stockdata.color",
-        size: "$stockdata.size",
-        quality: "$stockdata.quality",
-        type: "$stockdata.type"
+        productId: "$stockdata.productId",
+        categoryId: "$stockdata.categoryId"
       },
       totalQuantity: {
         $sum: {
@@ -136,7 +129,7 @@ const pipeline = [
     $facet: {
       metadata: [{ $count: "total" }],
       data: [
-        { $sort: { "_id.article": 1 } },
+        { $sort: { "_id.productId": 1 } },
         { $skip: (page - 1) * limit },
         { $limit: limit }
       ]
@@ -163,17 +156,31 @@ if (!result.length || result[0].data.length === 0) {
   };
 }
 
-const aggregatedStock = result[0].data.map(item => ({
-  article: item._id.article,
-  categoryCode: item._id.categoryCode,
-  color: item._id.color,
-  size: item._id.size,
-  quality: item._id.quality,
-  type: item._id.type,
-  totalQuantity: item.totalQuantity,
-  dispatchStock: item.dispatchStock,
-  AvailableQuantity: item.totalQuantity - item.dispatchStock 
-}));
+// Resolve article/category details from Product for display
+const whProductIds = [
+  ...new Set(result[0].data.map(item => item._id.productId && String(item._id.productId)).filter(Boolean)),
+];
+const whProducts = await Product.find({ _id: { $in: whProductIds } }).select("article category");
+const whProductMap = {};
+whProducts.forEach(p => { whProductMap[String(p._id)] = p; });
+
+const aggregatedStock = result[0].data.map(item => {
+  const prod = whProductMap[String(item._id.productId)];
+  const cat = prod?.category?.find(c => String(c._id) === String(item._id.categoryId));
+  return {
+    productId: item._id.productId,
+    categoryId: item._id.categoryId,
+    article: prod?.article,
+    categoryCode: cat?.categoryCode,
+    color: cat?.color,
+    size: cat?.size,
+    quality: Array.isArray(cat?.quality) ? cat.quality[0] : cat?.quality,
+    type: Array.isArray(cat?.type) ? cat.type[0] : cat?.type,
+    totalQuantity: item.totalQuantity,
+    dispatchStock: item.dispatchStock,
+    AvailableQuantity: item.totalQuantity - item.dispatchStock
+  };
+});
 
 const totalCount = result[0].metadata[0] ? result[0].metadata[0].total : 0;
 const totalPages = Math.ceil(totalCount / limit);

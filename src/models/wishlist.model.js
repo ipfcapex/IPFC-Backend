@@ -31,24 +31,8 @@ const locationSchema = new mongoose.Schema(
 
 const Wishlistitems = new mongoose.Schema(
   {
-    article: {
-      type: mongoose.Schema.Types.Mixed,
-    },
-    categoryCode: {
-      type: mongoose.Schema.Types.Mixed,
-    },
-    color: {
-      type: String,
-    },
-    size: {
-      type: String,
-    },
-    type: {
-      type: String,
-    },
-    quality: {
-      type: String,
-    },
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product" },
+    categoryId: { type: mongoose.Schema.Types.ObjectId },
     quantity: {
       type: Number,
       default: 0,

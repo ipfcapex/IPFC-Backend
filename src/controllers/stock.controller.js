@@ -243,21 +243,22 @@ exports.addDeliveryRecordss = async (req, res) => {
 exports.addScanRecordss = async (req, res) => {
   try {
     const { id } = req.params;        
-    const { ScanByorder, warehouse, quantity, article } = req.body; 
+    const { ScanByorder, warehouse, quantity, productId, categoryId } = req.body;
     console.log("Request body:", req.body);
 
     // Validate input
-    if (!ScanByorder || !warehouse || !quantity || !article) {
+    if (!ScanByorder || !warehouse || !quantity || !productId) {
       return res.status(400).json({
         success: false,
-        message: "All fields (ScanByorder, warehouse, quantity, article) are required",
+        message: "All fields (ScanByorder, warehouse, quantity, productId) are required",
       });
     }
 
     // Call service to update scanned status
     const updatedOrder = await stockService.getstockScanedbyWM(
       id,
-      article,
+      productId,
+      categoryId,
       ScanByorder,
       warehouse,
       quantity

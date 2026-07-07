@@ -1,5 +1,6 @@
 const { Customer, Product, Wishlist, Schemes } = require("../models");
 const mongoose = require("mongoose");
+const { enrichOrdersWithProductDetails } = require("./salesOrder.service");
 
 /**
  * Add items to wishlist
@@ -60,6 +61,7 @@ exports.AddToWishlist = async ({
     }
 
     let image = [];
+    let matchedCategoryId = null;
 
     if (productRecord && productRecord.category?.length) {
       const matchedCategory = productRecord.category.find(cat =>
@@ -68,21 +70,20 @@ exports.AddToWishlist = async ({
         cat.size?.toLowerCase() === item.size?.toLowerCase()
       );
 
-      // 🖼️ Image only if exact match
-      if (matchedCategory?.image?.length) {
-        image = [matchedCategory.image[0]];
+      if (matchedCategory) {
+        matchedCategoryId = matchedCategory._id;
+        // 🖼️ Image only if exact match
+        if (matchedCategory.image?.length) {
+          image = [matchedCategory.image[0]];
+        }
       }
     }
 
-    // ✅ Push clean wishlist item (NO spreading item)
+    // ✅ Push clean wishlist item (ids only)
     wishlistItems.push({
-      article: item.article,
-      categoryCode: item.categoryCode,
-      color: item.color,
-      size: item.size,
+      productId: productRecord._id,
+      categoryId: matchedCategoryId,
       quantity: item.quantity,
-      type: item.type,
-      quality: item.quality,
       image
     });
   }
@@ -121,8 +122,6 @@ exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "") => 
     const regex = new RegExp(search.trim(), "i");
     query.$or = [
       { description: { $regex: regex } },
-      { 'WishList.article': { $regex: regex } },
-      { 'WishList.categoryCode': { $regex: regex } },
       // { 'customer.name': { $regex: regex } }
     ];
   }
@@ -135,9 +134,12 @@ exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "") => 
       .populate("scheme", "name")
       .sort({ updatedAt: -1 })
       .skip(skip)
-      .limit(limitNum),
+      .limit(limitNum)
+      .lean(),
     Wishlist.countDocuments(query)
   ]);
+
+  await enrichOrdersWithProductDetails(wishlists);
 
   const totalPages = Math.ceil(totalItems / limitNum);
 
@@ -202,9 +204,11 @@ exports.getWishlistById = async (id) => {
   const wishlist = await Wishlist.findById(id)
     .populate("customer", "name email phone location")
     .populate("createdBy", "name email")
-    .populate("scheme", "name");
+    .populate("scheme", "name")
+    .lean();
 
   if (!wishlist) throw new Error("Wishlist not found");
+  await enrichOrdersWithProductDetails([wishlist]);
   return wishlist;
 };
 
@@ -251,16 +255,25 @@ exports.updateWishlistById = async (id, updateData) => {
       });
 
       let imageUrl = null;
+      let matchedCategoryId = null;
       if (productRecord && productRecord.category?.length > 0) {
         const matchedCategory = productRecord.category.find(cat =>
           cat.categoryCode === item.categoryCode &&
           cat.color.toLowerCase() === item.color.toLowerCase() &&
           cat.size.toLowerCase() === item.size.toLowerCase()
         );
-        if (matchedCategory) imageUrl = matchedCategory.image[0];
+        if (matchedCategory) {
+          matchedCategoryId = matchedCategory._id;
+          imageUrl = matchedCategory.image[0];
+        }
       }
 
-      updatedItems.push({ ...item, image: imageUrl ? [imageUrl] : [] });
+      updatedItems.push({
+        productId: productRecord?._id,
+        categoryId: matchedCategoryId,
+        quantity: item.quantity,
+        image: imageUrl ? [imageUrl] : [],
+      });
     }
 
     wishlist.WishList = updatedItems;

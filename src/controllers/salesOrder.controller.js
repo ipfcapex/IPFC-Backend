@@ -450,6 +450,10 @@ exports.getAllbySalesperson = async (req, res) => {
       .populate("customer", "name")
       .populate("createdBy", "name email")
       .populate("scheme", "schemesName schemesType schemesQuantity schemesDescription")
+      .populate({
+        path: "items.productId",
+        model: "Product"
+      })
       .lean();
 
     // Apply search
@@ -481,7 +485,32 @@ exports.getAllbySalesperson = async (req, res) => {
           ? Math.min(100, Math.round((scannedQty / orderTotalQty) * 100))
           : 0;
 
-      return { ...order, orderTotalQty, numOfDispatchedQty: scannedQty, scanPercent };
+      const formattedItems = (order.items || []).map((it) => {
+        const product = it.productId;
+        let category = null;
+        if (product && Array.isArray(product.category) && it.categoryId) {
+          category = product.category.find(
+            (c) => c._id.toString() === it.categoryId.toString()
+          );
+        }
+        return {
+          ...it,
+          article: product?.article || order.article || "N/A",
+          categoryCode: category?.categoryCode || "N/A",
+          color: category?.color || "N/A",
+          size: category?.size || "N/A",
+          type: category?.type || "N/A",
+          quality: category?.quality || "N/A",
+        };
+      });
+
+      return {
+        ...order,
+        items: formattedItems,
+        orderTotalQty,
+        numOfDispatchedQty: scannedQty,
+        scanPercent,
+      };
     });
 
     return res.status(200).json({

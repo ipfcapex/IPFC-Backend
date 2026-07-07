@@ -2,12 +2,8 @@ const mongoose = require("mongoose");
 
 const qrCodeEntrySchema = new mongoose.Schema({
   productionNo: { type: String, required: true },
-  article: { type: mongoose.Schema.Types.Mixed,  required: true},
-  categoryCode: { type: mongoose.Schema.Types.Mixed,  required: true},
-  color: { type: String,  required: true},
-  size: { type: String,  required: true},
-  type: { type: String,  required: true},
-  quality: { type: String,  required: true},
+  productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+  categoryId: { type: mongoose.Schema.Types.ObjectId },
   quantity: { type: Number, default: 0 },
   qrData: { type: String}, // Base64 image,
   dispatched: { type: Boolean, default: false }, 

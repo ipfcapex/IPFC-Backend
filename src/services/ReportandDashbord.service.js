@@ -3,6 +3,7 @@ const { Production } = require("../models");
 const { Stock } = require("../models");
 const { User } = require("../models");
 const { Cart } = require("../models");
+const { Product } = require("../models");
 
 // Get sells Report
 exports.getsellReport = async (filter = {}, page = 1, limit = 10, search = "") => {
@@ -713,27 +714,37 @@ exports.getTopsales = async (filter = {}, page = 1, limit = 10) => {
     ...filter,
   };
 
-  // 1. Get all matching orders
-  const sellorder = await SellOrder.find(query).select("items");
+  // 1. Get all matching orders with populated productId
+  const sellorder = await SellOrder.find(query)
+    .select("items")
+    .populate({ path: "items.productId", model: "Product", select: "article category" });
 
-  // 2. Flatten items (keep quantity here for summing)
+  // 2. Flatten items - resolve flat fields from productId/categoryId refs
   const allItems = sellorder.flatMap((order) =>
-    order.items.map((item) => ({
-      article: item.article,
-      categoryCode: item.categoryCode,
-      color: item.color,
-      size: item.size,
-      type: item.type,
-      quality: item.quality,
-      quantity: item.quantity,
-    }))
+    order.items.map((item) => {
+      const prod = item.productId;
+      const cat = prod?.category?.find((c) => String(c._id) === String(item.categoryId));
+      return {
+        productId: prod?._id || item.productId,
+        categoryId: cat?._id || item.categoryId,
+        article: prod?.article,
+        categoryCode: cat?.categoryCode,
+        color: cat?.color,
+        size: cat?.size,
+        type: Array.isArray(cat?.type) ? cat.type[0] : cat?.type,
+        quality: Array.isArray(cat?.quality) ? cat.quality[0] : cat?.quality,
+        quantity: item.quantity,
+      };
+    })
   );
 
-  // 3. Group by all identifying fields
+  // 3. Group by productId + categoryId for accurate matching
   const grouped = allItems.reduce((acc, item) => {
-    const key = `${item.article}-${item.categoryCode}-${item.color}-${item.size}-${item.type}-${item.quality}`;
+    const key = `${item.productId}-${item.categoryId}`;
     if (!acc[key]) {
       acc[key] = {
+        productId: item.productId,
+        categoryId: item.categoryId,
         article: item.article,
         categoryCode: item.categoryCode,
         color: item.color,
@@ -760,7 +771,7 @@ exports.getTopsales = async (filter = {}, page = 1, limit = 10) => {
   const paginatedItems = aggregatedItems.slice(skip, skip + limit);
 
   return {
-    report: paginatedItems, // only has totalQuantity now
+    report: paginatedItems,
     pagination: {
       currentPage: page,
       totalPages,
@@ -770,90 +781,95 @@ exports.getTopsales = async (filter = {}, page = 1, limit = 10) => {
   };
 };
 
-//Low Stock 
+// Helper to extract flat fields from a populated item's productId/categoryId refs
+function resolveItemFields(item) {
+  const prod = item.productId;
+  const cat = prod?.category?.find((c) => String(c._id) === String(item.categoryId));
+  return {
+    productId: prod?._id || item.productId,
+    categoryId: cat?._id || item.categoryId,
+    article: prod?.article,
+    categoryCode: cat?.categoryCode,
+    color: cat?.color,
+    size: cat?.size,
+    type: Array.isArray(cat?.type) ? cat.type[0] : cat?.type,
+    quality: Array.isArray(cat?.quality) ? cat.quality[0] : cat?.quality,
+  };
+}
+
+//Low Stock
 exports.lowstockAlert = async (page = 1, limit = 5) => {
   try {
-    // 1️⃣ Approved Sell Orders
+    // 1️⃣ Approved Sell Orders - populate productId for items and WishList
     const sellOrderQuery = {
       isActive: true,
       accountSectionApproval: "APPROVED",
     };
 
-    const orderstock = await SellOrder.find(sellOrderQuery).select("items WishList");
+    const orderstock = await SellOrder.find(sellOrderQuery)
+      .select("items WishList")
+      .populate({ path: "items.productId", model: "Product", select: "article category" })
+      .populate({ path: "WishList.productId", model: "Product", select: "article category" });
 
     // Flatten SellOrder items (OrderedQuantity)
     const allItems = orderstock.flatMap(order =>
-      (order.items || []).map(item => ({
-        article: item.article,
-        categoryCode: item.categoryCode,
-        color: item.color,
-        size: item.size,
-        type: item.type,
-        quality: item.quality,
-        quantity: item.quantity,
-      }))
+      (order.items || []).map(item => {
+        const fields = resolveItemFields(item);
+        return { ...fields, quantity: item.quantity };
+      })
     );
 
     const groupedOrders = allItems.reduce((acc, item) => {
-      const key = `${item.article}-${item.categoryCode}-${item.color}-${item.size}-${item.type}-${item.quality}`;
+      const key = `${item.productId}-${item.categoryId}`;
       if (!acc[key]) acc[key] = { ...item, totalQuantity: 0 };
       acc[key].totalQuantity += item.quantity;
       return acc;
     }, {});
-    console.log("groupedOrders:", groupedOrders);
+
     // SellOrder WishList
     const allWishlist = orderstock.flatMap(order =>
-      (order.WishList || []).map(item => ({
-        article: item.article,
-        categoryCode: item.categoryCode,
-        color: item.color,
-        size: item.size,
-        type: item.type,
-        quality: item.quality,
-        quantity: item.quantity,
-      }))
+      (order.WishList || []).map(item => {
+        const fields = resolveItemFields(item);
+        return { ...fields, quantity: item.quantity };
+      })
     );
 
     const groupedWishlist = allWishlist.reduce((acc, item) => {
-      const key = `${item.article}-${item.categoryCode}-${item.color}-${item.size}-${item.type}-${item.quality}`;
+      const key = `${item.productId}-${item.categoryId}`;
       if (!acc[key]) acc[key] = { ...item, totalQuantity: 0 };
       acc[key].totalQuantity += item.quantity;
       return acc;
     }, {});
 
-    // Cart WishList
-    const cartData = await Cart.find({ isActive: true }).select("WishList");
+    // Cart WishList - populate productId
+    const cartData = await Cart.find({ isActive: true })
+      .select("WishList")
+      .populate({ path: "WishList.productId", model: "Product", select: "article category" });
+
     const cartWishlist = cartData.flatMap(cart =>
-      (cart.WishList || []).map(item => ({
-        article: item.article,
-        categoryCode: item.categoryCode,
-        color: item.color,
-        size: item.size,
-        type: item.type,
-        quality: item.quality,
-        quantity: item.quantity,
-      }))
+      (cart.WishList || []).map(item => {
+        const fields = resolveItemFields(item);
+        return { ...fields, quantity: item.quantity };
+      })
     );
 
     const groupedCartWishlist = cartWishlist.reduce((acc, item) => {
-      const key = `${item.article}-${item.categoryCode}-${item.color}-${item.size}-${item.type}-${item.quality}`;
+      const key = `${item.productId}-${item.categoryId}`;
       if (!acc[key]) acc[key] = { ...item, totalQuantity: 0 };
       acc[key].totalQuantity += item.quantity;
       return acc;
     }, {});
 
-    // 2️⃣ Stock + Production
-    const stockDocs = await Stock.find({ isActive: true }).select("stockdata");
+    // 2️⃣ Stock - populate stockdata.productId to resolve flat fields
+    const stockDocs = await Stock.find({ isActive: true })
+      .select("stockdata")
+      .populate({ path: "stockdata.productId", model: "Product", select: "article category" });
+
     const allStock = stockDocs.flatMap(doc =>
-      (doc.stockdata || []).filter(item => item.dispatched === false).map(item => ({
-        article: item.article,
-        categoryCode: item.categoryCode,
-        color: item.color,
-        size: item.size,
-        type: item.type,
-        quality: item.quality,
-        available: item.quantity,
-      }))
+      (doc.stockdata || []).filter(item => item.dispatched === false).map(item => {
+        const fields = resolveItemFields(item);
+        return { ...fields, available: item.quantity };
+      })
     );
 
     const productionDocs = await Production.find({ isActive: true }).select(
@@ -864,6 +880,8 @@ exports.lowstockAlert = async (page = 1, limit = 5) => {
       const availableQty = (doc.productionQuantity || 0) - (doc.dispatchedQuantity || 0);
       if (availableQty <= 0) return null;
       return {
+        productId: null,
+        categoryId: null,
         article: doc.article,
         categoryCode: doc.category?.categoryCode || "UNKNOWN",
         color: doc.category?.color || doc.color || "UNKNOWN",
@@ -877,7 +895,10 @@ exports.lowstockAlert = async (page = 1, limit = 5) => {
     const combinedStock = [...allStock, ...allProductionStock];
 
     const groupedStock = combinedStock.reduce((acc, item) => {
-      const key = `${item.article}-${item.categoryCode}-${item.color}-${item.size}-${item.type}-${item.quality}`;
+      // Use productId+categoryId key for stock items; fall back to flat article key for production
+      const key = item.productId
+        ? `${item.productId}-${item.categoryId}`
+        : `article:${item.article}-${item.categoryCode}-${item.color}-${item.size}`;
       if (!acc[key]) acc[key] = { ...item, available: 0 };
       acc[key].available += item.available;
       return acc;
@@ -904,6 +925,8 @@ exports.lowstockAlert = async (page = 1, limit = 5) => {
       if (requiredQuantity > availableQty) {
         const base = groupedOrders[key] || groupedWishlist[key] || groupedCartWishlist[key];
         lowStockAlerts.push({
+          productId: base.productId,
+          categoryId: base.categoryId,
           article: base.article,
           categoryCode: base.categoryCode,
           color: base.color,
@@ -1226,15 +1249,3 @@ exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter 
 
   return pipelines;
 };
-
-
-
-
-
-
-
-
-
-
-
-

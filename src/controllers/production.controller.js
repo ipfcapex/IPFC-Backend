@@ -125,6 +125,7 @@ exports.getProductionDatabyPM = async (req, res) => {
     const [productions, totalItems] = await Promise.all([
       Production.find(query)
         .populate("factory", "name location")
+        .populate("productId", "article category")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit),
@@ -134,17 +135,30 @@ exports.getProductionDatabyPM = async (req, res) => {
     console.log("📦 Productions fetched:", productions.length);
 
     // 🔁 Flatten response
-    const flattened = productions.map(p => ({
-      productionId: p._id,
-      productionNo: p.productionNo,
-      article: p.article,
-      productionDate: p.productionDate,
-      productionQuantity: p.productionQuantity,
-      dispatchedQuantity: p.dispatchedQuantity,
-      status: p.status,
-      factory: p.factory,
-      createdAt: p.createdAt
-    }));
+    const flattened = productions.map(p => {
+      const product = p.productId;
+      const matchedCategory =
+        product && Array.isArray(product.category)
+          ? product.category.find(
+              c => String(c._id) === String(p.categoryId)
+            )
+          : null;
+
+      return {
+        productionId: p._id,
+        productionNo: p.productionNo,
+        productId: product
+          ? { _id: product._id, article: product.article }
+          : p.productId,
+        categoryId: matchedCategory || p.categoryId,
+        productionDate: p.productionDate,
+        productionQuantity: p.productionQuantity,
+        dispatchedQuantity: p.dispatchedQuantity,
+        status: p.status,
+        factory: p.factory,
+        createdAt: p.createdAt
+      };
+    });
 
     return res.status(200).json({
       success: true,

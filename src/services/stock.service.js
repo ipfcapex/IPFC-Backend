@@ -1,6 +1,7 @@
 const { Stock } = require("../models");
 const { User } = require("../models");
 const { Production } = require("../models");
+const { Product } = require("../models");
 const qrCodeModel = require("../models/qrCode.model");
 const { decodeBase64Qr } = require("../utils/DecodeQR");
 const { Warehouse } = require("../models");
@@ -163,6 +164,10 @@ exports.createStockByQr = async (qrImage) => {
 
     if (!qrDoc) throw new Error("QR not found in the database");
 
+    if (qrDoc.qrCodes[0].warehouseinScan === true) {
+      throw new Error("This QR has already been scanned for warehouse incoming stock.");
+    }
+
     const qrString = qrDoc.qrCodes[0].qrData;
     const qrData = await decodeBase64Qr(qrString);
 
@@ -185,10 +190,8 @@ exports.createStockByQr = async (qrImage) => {
     if (!production)
       throw new Error(`No matching Production found for productionNo: ${productionNo}`);
 
-    const { article, factory } = production;
-    const qrCategory = parsedQr.category || {}; // ✅ Correctly access object
-
-    const quantity = qrCategory.quantity || 1;
+    const { factory } = production;
+    const quantity = parsedQr.quantity || 1;
 
     // 3️⃣ Check if product is dispatched from factory
     const factoryStatus = await Production.findOne({
@@ -208,13 +211,19 @@ exports.createStockByQr = async (qrImage) => {
     if (existingStockWithQr)
       throw new Error("This QR image has already been scanned and added to stock.");
 
-    // 5️⃣ Check if stock for this warehouse + article + category exists
+    // Mark warehouseinScan as true in the QR document
+    await qrCodeModel.updateOne(
+      { "qrCodes.qrId": qrImage },
+      { $set: { "qrCodes.$.warehouseinScan": true } }
+    );
+
+    // 5️⃣ Check if stock for this warehouse + product/category exists
     let stockDoc = await Stock.findOne({
       warehouse,
       stockdata: {
         $elemMatch: {
-          article,
-          categoryCode: qrCategory.categoryCode,
+          productId: production.productId,
+          categoryId: production.categoryId,
         },
       },
     });
@@ -222,12 +231,8 @@ exports.createStockByQr = async (qrImage) => {
     if (stockDoc) {
       // Update existing stock
       stockDoc.stockdata.push({
-        article,
-        categoryCode: qrCategory.categoryCode || "",
-        color: qrCategory.color || "",
-        size: qrCategory.size || "",
-        type: qrCategory.type || "",
-        quality: qrCategory.quality || "",
+        productId: production.productId,
+        categoryId: production.categoryId,
         quantity,
         qrData: qrImage,
         productionNo,
@@ -240,16 +245,11 @@ exports.createStockByQr = async (qrImage) => {
       stockDoc = await Stock.create({
         factory,
         warehouse,
-        categoryCode: qrCategory.categoryCode || "",
         toatalQuantity: quantity,
         stockdata: [
           {
-            article,
-            categoryCode: qrCategory.categoryCode || "",
-            color: qrCategory.color || "",
-            size: qrCategory.size || "",
-            type: qrCategory.type || "",
-            quality: qrCategory.quality || "",
+            productId: production.productId,
+            categoryId: production.categoryId,
             quantity,
             qrData: qrImage,
             productionNo,
@@ -363,12 +363,14 @@ exports.getAllStockss = async ({ page = 1, limit = 10, search = "", ...filters }
     if (!groupedItems[prodNo]) {
       groupedItems[prodNo] = {
         productionNo: prodNo,
-        article: stock.article,
-        categoryCode: stock.categoryCode,
-        size: stock.size,
-        type: stock.type,
-        color: stock.color,
-        quality: stock.quality,
+        productId: stock.productId,
+        categoryId: stock.categoryId,
+        article: null,
+        categoryCode: null,
+        size: null,
+        type: null,
+        color: null,
+        quality: null,
         factory: item.factory,
         warehouseData: []
       };
@@ -384,6 +386,24 @@ exports.getAllStockss = async ({ page = 1, limit = 10, search = "", ...filters }
 
   // Convert to array for pagination
   const allItemsArray = Object.values(groupedItems);
+
+  // Resolve article/category details from Product for display
+  const productIds = [
+    ...new Set(allItemsArray.map(g => g.productId && String(g.productId)).filter(Boolean)),
+  ];
+  const products = await Product.find({ _id: { $in: productIds } }).select("article category");
+  const productMap = {};
+  products.forEach(p => { productMap[String(p._id)] = p; });
+  allItemsArray.forEach(g => {
+    const prod = productMap[String(g.productId)];
+    const cat = prod?.category?.find(c => String(c._id) === String(g.categoryId));
+    g.article = prod?.article;
+    g.categoryCode = cat?.categoryCode;
+    g.color = cat?.color;
+    g.size = cat?.size;
+    g.type = Array.isArray(cat?.type) ? cat.type[0] : cat?.type;
+    g.quality = Array.isArray(cat?.quality) ? cat.quality[0] : cat?.quality;
+  });
 
   const totalItems = allItemsArray.length;
   const totalPages = Math.ceil(totalItems / limit);
@@ -477,25 +497,49 @@ exports.scanAndDispatch = async (req) => {
   // ✅ Locate the order item + its allocation for THIS warehouse that still has
   // remaining quantity to dispatch (scanqtyatdispatch < quantity). Multiple
   // items can share an article, so we pick the next allocation with capacity.
+  let productMatched = false;
+  let warehouseAllocated = false;
   let targetItem = null;
   let targetWh = null;
+
   for (const it of order.items) {
-    if (it.article?.toString() !== stockItem.article?.toString()) continue;
-    const candidate = (it.warehouses || []).find(
-      (w) =>
-        w.warehouse?.toString() === stockWarehouseId &&
-        (Number(w.scanqtyatdispatch) || 0) < (Number(w.quantity) || 0)
+    if (
+      String(it.productId) !== String(stockItem.productId) ||
+      String(it.categoryId) !== String(stockItem.categoryId)
+    )
+      continue;
+
+    productMatched = true;
+
+    const allocation = (it.warehouses || []).find(
+      (w) => w.warehouse?.toString() === stockWarehouseId
     );
-    if (candidate) {
-      targetItem = it;
-      targetWh = candidate;
-      break;
+
+    if (allocation) {
+      warehouseAllocated = true;
+      if ((Number(allocation.scanqtyatdispatch) || 0) < (Number(allocation.quantity) || 0)) {
+        targetItem = it;
+        targetWh = allocation;
+        break;
+      }
     }
+  }
+
+  if (!productMatched) {
+    throw new Error(
+      `Product variation is not part of order ${ordNumScanFor}.`
+    );
+  }
+
+  if (!warehouseAllocated) {
+    throw new Error(
+      `This product variation is not allocated to this warehouse (${stock.warehouse?.name || "unknown"}) for order ${ordNumScanFor}.`
+    );
   }
 
   if (!targetItem || !targetWh) {
     throw new Error(
-      `All allocated units for article ${stockItem.article} in this warehouse are already dispatched for order ${ordNumScanFor}.`
+      `All allocated units for this product in this warehouse (${stock.warehouse?.name || "unknown"}) are already dispatched for order ${ordNumScanFor}.`
     );
   }
 
@@ -515,6 +559,7 @@ exports.scanAndDispatch = async (req) => {
       $set: {
         "qrCodes.$.ordNumScanFor": ordNumScanFor,
         "qrCodes.$.lastScanAt": scannedAt,
+        "qrCodes.$.warehouseDispatch": true,
       },
     }
   );
@@ -542,12 +587,8 @@ exports.scanAndDispatch = async (req) => {
   return {
     factory: stock.factory?.name || "N/A",
     warehouse: stock.warehouse?.name || "N/A",
-    article: stockItem.article,
-    categoryCode: stockItem.categoryCode,
-    color: stockItem.color,
-    size: stockItem.size,
-    type: stockItem.type,
-    quality: stockItem.quality,
+    productId: stockItem.productId,
+    categoryId: stockItem.categoryId,
     quantity: stockItem.quantity,
     qrData: stockItem.qrData,
     dispatched: stockItem.dispatched,
@@ -575,6 +616,10 @@ exports.getStockByWarehouse = async (warehouseId, page = 1, limit = 10) => {
   const stockData = await Stock.find({ warehouse: warehouseId, isActive: true })
     .populate("factory", "name location") // populate factory details
     .populate("warehouse", "name location") // populate warehouse details
+    .populate({
+      path: "stockdata.productId",
+      model: "Product"
+    })
     .skip(skip)
     .limit(limit);
 
@@ -583,17 +628,36 @@ exports.getStockByWarehouse = async (warehouseId, page = 1, limit = 10) => {
   }
 
   // Format response with availableQuantity
-  const formatted = stockData.map((s) => ({
-    _id: s._id,
-    warehouse: s.warehouse,
-    factory: s.factory,
-    totalQuantity: s.toatalQuantity || 0,
-    dispatchStock: s.dispatchStock || 0,
-    availableQuantity: (s.toatalQuantity || 0) - (s.dispatchStock || 0),
-    stockdata: s.stockdata,
-    createdAt: s.createdAt,
-    updatedAt: s.updatedAt,
-  }));
+  const formatted = stockData.map((s) => {
+    return {
+      _id: s._id,
+      warehouse: s.warehouse,
+      factory: s.factory,
+      totalQuantity: s.toatalQuantity || 0,
+      dispatchStock: s.dispatchStock || 0,
+      availableQuantity: (s.toatalQuantity || 0) - (s.dispatchStock || 0),
+      stockdata: s.stockdata.map((item) => {
+        const itemObj = item.toObject ? item.toObject() : item;
+        const product = itemObj.productId;
+        
+        let matchedCategory = null;
+        if (product && Array.isArray(product.category) && itemObj.categoryId) {
+          matchedCategory = product.category.find(
+            (c) => c._id.toString() === itemObj.categoryId.toString()
+          );
+        }
+
+        return {
+          ...itemObj,
+          productId: product,
+          categoryId: itemObj.categoryId,
+          category: matchedCategory
+        };
+      }),
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+    };
+  });
 
   return {
     data: formatted,
@@ -648,12 +712,8 @@ exports.bypassScanAndAddStock = async (productionNo) => {
       for (const qr of missingQRCodes) {
         existingStock.stockdata.push({
           productionNo: qrDoc.productionNo,
-          article: qr.article,
-          categoryCode: qr.categoryCode,
-          color: qr.color,
-          size: qr.size,
-          type: qr.type,
-          quality: qr.quality,
+          productId: qr.productId,
+          categoryId: qr.categoryId,
           quantity: parseInt(qr.quantity) || 1,
           qrData: qr.qrId,
           qrId: qr.qrId,
@@ -696,13 +756,9 @@ exports.bypassScanAndAddStock = async (productionNo) => {
         };
       }
 
-      const firstQR = missingQRCodes[0]; // take one QR for details
-
       return {
         success: true,
-        message: `${missingQRCodes.length} QR codes for article ${
-          firstQR?.article || "N/A"
-        } from production ${
+        message: `${missingQRCodes.length} QR codes from production ${
           qrDoc.productionNo
         } have been successfully synced to stock.`,
       };
@@ -723,14 +779,10 @@ exports.bypassScanAndAddStock = async (productionNo) => {
     }
 
     const newStockData = qrCodes.map((qr) => ({
-      warehouse: qrDoc.warehouse, 
+      warehouse: qrDoc.warehouse,
       productionNo: qrDoc.productionNo,
-      article: qr.article,
-      categoryCode: qr.categoryCode,
-      color: qr.color,
-      size: qr.size,
-      type: qr.type,
-      quality: qr.quality,
+      productId: qr.productId,
+      categoryId: qr.categoryId,
       quantity: parseInt(qr.quantity) || 1,
       qrData: qr.qrId,
       qrId: qr.qrId,
@@ -803,17 +855,17 @@ exports.bypassScanAndAddStock = async (productionNo) => {
 //By pass last scan at Out of delivey 
 exports.bypassScanAtDelivery = async (productionNo, article, quantity) => {
   try {
-    // 1. Find the stock document that contains the productionNo + article
+    // 1. Find the stock document that contains the productionNo
+    // (productionNo uniquely identifies the production's stock items)
     const stockDoc = await Stock.findOne({
       "stockdata.productionNo": productionNo,
-      "stockdata.article": article,
       isActive: true,
     });
 
     if (!stockDoc) {
       return {
         success: false,
-        message: "No stock found for the given production number and article",
+        message: "No stock found for the given production number",
       };
     }
 
@@ -828,14 +880,13 @@ exports.bypassScanAtDelivery = async (productionNo, article, quantity) => {
     // 3. Get pending items (not yet dispatched)
     const pendingItems = stockDoc.stockdata.filter(
       (item) => item.productionNo === productionNo &&
-                item.article === article &&
                 !item.dispatched
     );
 
     if (pendingItems.length === 0) {
       return {
         success: false,
-        message: "All items for this production number and article are already dispatched",
+        message: "All items for this production number are already dispatched",
       };
     }
 
@@ -846,7 +897,6 @@ exports.bypassScanAtDelivery = async (productionNo, article, quantity) => {
     stockDoc.stockdata.forEach((item) => {
       if (
         item.productionNo === productionNo &&
-        item.article === article &&
         !item.dispatched &&
         itemsToUpdate.find((up) => up.qrData === item.qrData)
       ) {
@@ -896,8 +946,8 @@ exports.addDeliveryRecord = async (id, deliveryStatus) => {
 };
 
 //Changed Status at Scan 
-exports.getstockScanedbyWM = async (id, article, ScanByorder, warehouse, quantity) => {
- 
+exports.getstockScanedbyWM = async (id, productId, categoryId, ScanByorder, warehouse, quantity) => {
+
 
   if (!mongoose.Types.ObjectId.isValid(id)) throw new Error("Invalid order ID");
   if (!mongoose.Types.ObjectId.isValid(warehouse)) throw new Error("Invalid warehouse ID");
@@ -906,14 +956,17 @@ exports.getstockScanedbyWM = async (id, article, ScanByorder, warehouse, quantit
   const order = await SellOrder.findById(id);
   if (!order) throw new Error("Order not found");
 
-  // 2️ Find the first article+warehouse pair that is still UNSCANNED.
-  // Multiple order items can share the same article (different specs), and
-  // the frontend only sends `article` + `warehouse`, so we disambiguate by
-  // picking the next unscanned warehouse row.
+  // 2️ Find the first product/category + warehouse pair that is still UNSCANNED.
+  // Multiple order items can share the same product (different category combos),
+  // so we disambiguate by productId + categoryId, then pick the next unscanned row.
   let item = null;
   let wh = null;
   for (const it of order.items) {
-    if (it.article.toString() !== article.toString()) continue;
+    if (
+      String(it.productId) !== String(productId) ||
+      String(it.categoryId) !== String(categoryId)
+    )
+      continue;
     const candidate = it.warehouses.find(
       w =>
         w.warehouse.toString() === warehouse.toString() &&
@@ -928,7 +981,7 @@ exports.getstockScanedbyWM = async (id, article, ScanByorder, warehouse, quantit
 
   if (!item || !wh) {
     throw new Error(
-      "Article/warehouse not found in this order, or already scanned."
+      "Product/warehouse not found in this order, or already scanned."
     );
   }
 
@@ -1005,12 +1058,8 @@ exports.getStockInOutSummary = async ({ warehouseId } = {}) => {
   });
 
   const variantKey = {
-    article: "$stockdata.article",
-    categoryCode: "$stockdata.categoryCode",
-    type: "$stockdata.type",
-    size: "$stockdata.size",
-    color: "$stockdata.color",
-    quality: "$stockdata.quality",
+    productId: "$stockdata.productId",
+    categoryId: "$stockdata.categoryId",
   };
 
   const match = { isActive: true };
@@ -1060,12 +1109,8 @@ exports.getStockInOutSummary = async ({ warehouseId } = {}) => {
           {
             $project: {
               _id: 0,
-              article: "$_id.article",
-              categoryCode: "$_id.categoryCode",
-              type: "$_id.type",
-              size: "$_id.size",
-              color: "$_id.color",
-              quality: "$_id.quality",
+              productId: "$_id.productId",
+              categoryId: "$_id.categoryId",
               dayIn: 1,
               dayOut: 1,
               monthIn: 1,
@@ -1074,7 +1119,7 @@ exports.getStockInOutSummary = async ({ warehouseId } = {}) => {
               yearOut: 1,
             },
           },
-          { $sort: { article: 1, categoryCode: 1, color: 1, size: 1 } },
+          { $sort: { productId: 1 } },
         ],
       },
     },
@@ -1083,14 +1128,28 @@ exports.getStockInOutSummary = async ({ warehouseId } = {}) => {
   const t = (data && data.totals && data.totals[0]) || {};
   const rows = (data && data.byVariant) || [];
 
-  const pickVariant = (row) => ({
-    article: row.article,
-    categoryCode: row.categoryCode,
-    type: row.type,
-    size: row.size,
-    color: row.color,
-    quality: row.quality,
-  });
+  // Resolve article/category details from Product for display
+  const variantProductIds = [
+    ...new Set(rows.map((r) => r.productId && String(r.productId)).filter(Boolean)),
+  ];
+  const variantProducts = await Product.find({ _id: { $in: variantProductIds } }).select("article category");
+  const variantProductMap = {};
+  variantProducts.forEach((p) => { variantProductMap[String(p._id)] = p; });
+
+  const pickVariant = (row) => {
+    const prod = variantProductMap[String(row.productId)];
+    const cat = prod?.category?.find((c) => String(c._id) === String(row.categoryId));
+    return {
+      productId: row.productId,
+      categoryId: row.categoryId,
+      article: prod?.article,
+      categoryCode: cat?.categoryCode,
+      type: Array.isArray(cat?.type) ? cat.type[0] : cat?.type,
+      size: cat?.size,
+      color: cat?.color,
+      quality: Array.isArray(cat?.quality) ? cat.quality[0] : cat?.quality,
+    };
+  };
 
   const byVariant = {
     day: rows
