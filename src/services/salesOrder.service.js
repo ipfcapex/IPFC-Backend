@@ -640,8 +640,19 @@ exports.getOrders = async (filter = {}, page = 1, limit = 10, search = "") => {
   const limitNum = parseInt(limit, 10) || 10;
   const skip = (pageNum - 1) * limitNum;
 
+  // Pull the date range out of the raw query params so they are not spread
+  // into the Mongo query as bogus fields.
+  const { startDate, endDate, ...restFilter } = filter;
+
   // Base query
-  const query = { isActive: true, ...filter };
+  const query = { isActive: true, ...restFilter };
+
+  // Optional inclusive date range on order creation date (YYYY-MM-DD).
+  if (startDate || endDate) {
+    query.createdAt = {};
+    if (startDate) query.createdAt.$gte = new Date(`${startDate}T00:00:00.000Z`);
+    if (endDate) query.createdAt.$lte = new Date(`${endDate}T23:59:59.999Z`);
+  }
 
   // ✅ Add search directly into Mongo query
   if (search && search.trim() !== "") {

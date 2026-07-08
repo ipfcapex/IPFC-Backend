@@ -31,6 +31,17 @@ const formatDateToIST = (date) => {
     return d.toLocaleString('en-IN', options).replace(',', ' ~');
 };
 
+// Resolve the product name (article) and category name from a populated
+// productId (Product doc with its category subdocs) and a categoryId.
+const resolveArticleAndCategory = (product, categoryId) => {
+    const article = product?.article || "Unknown Article";
+    const matched = Array.isArray(product?.category)
+        ? product.category.find((c) => String(c._id) === String(categoryId))
+        : null;
+    const category = matched?.categoryCode || "Unknown Category";
+    return { article, category };
+};
+
 exports.getRecentUpdates = async (page, limit, search = "", from = null, to = null) => {
     const twentyFourHoursAgo = new Date();
     twentyFourHoursAgo.setDate(twentyFourHoursAgo.getDate() - 30);
@@ -77,8 +88,9 @@ exports.getRecentUpdates = async (page, limit, search = "", from = null, to = nu
         },
     })
         .populate("factory", "name")
+        .populate("productId", "article category")
         .select(
-            "factory productionNo article productionQuantity createdAt updatedAt status dispatchedQuantity"
+            "factory productId categoryId productionNo productionQuantity createdAt updatedAt status dispatchedQuantity"
         );
 
     // fetch QRcode
@@ -86,7 +98,9 @@ exports.getRecentUpdates = async (page, limit, search = "", from = null, to = nu
         updatedAt: {
             $gte: twentyFourHoursAgo,
         },
-    }).select("productionNo products createdAt updatedAt");
+    })
+        .populate("qrCodes.productId", "article category")
+        .select("productionNo qrCodes createdAt updatedAt");
 
     // fetch Product
     const product = await Product.find({
@@ -109,6 +123,7 @@ exports.getRecentUpdates = async (page, limit, search = "", from = null, to = nu
         updatedAt: { $gte: twentyFourHoursAgo },
     })
         .populate("warehouse", "name") // populate warehouse name
+        .populate("stockdata.productId", "article category") // populate product name + category
         .select(
             "warehouse toatalQuantity dispatchStock stockdata createdAt updatedAt"
         );
@@ -196,15 +211,19 @@ exports.getRecentUpdates = async (page, limit, search = "", from = null, to = nu
 
     const formattedProduction = production.map((pd) => {
         const factoryName = pd.factory?.name || "Unknown Factory";
+        const { article, category: categoryName } = resolveArticleAndCategory(
+            pd.productId,
+            pd.categoryId
+        );
         const isNew = pd.createdAt.getTime() === pd.updatedAt.getTime();
         let actionMessage = "";
 
         if (isNew && pd.status === "Ready") {
-            actionMessage = `At ${factoryName}, new production is done for article: ${pd.article} with quantity: ${pd.productionQuantity}`;
+            actionMessage = `At ${factoryName}, new production is done for article: ${article} (category: ${categoryName}) with quantity: ${pd.productionQuantity}`;
         } else if (pd.status === "Partially Dispatch") {
             actionMessage = `For production number ${pd.productionNo}, QR has been scanned. ${pd.dispatchedQuantity} out of ${pd.productionQuantity} units have been dispatched.`;
         } else if (pd.status === "Dispatch from Factory") {
-            actionMessage = `Qr-scanned for ProductionNo: ${pd.productionNo} and Dispatch from ${factoryName} for article: ${pd.article}`;
+            actionMessage = `Qr-scanned for ProductionNo: ${pd.productionNo} and Dispatch from ${factoryName} for article: ${article} (category: ${categoryName})`;
         } else {
             actionMessage = `Details updated for production ${pd.productionNo} at ${factoryName}`;
         }
@@ -212,7 +231,8 @@ exports.getRecentUpdates = async (page, limit, search = "", from = null, to = nu
         return {
             type: "Production",
             name: `${factoryName}`,
-            article: pd.article,
+            article: article,
+            category: categoryName,
             quantity: pd.productionQuantity,
             date: pd.updatedAt,
             Action: actionMessage,
@@ -220,14 +240,19 @@ exports.getRecentUpdates = async (page, limit, search = "", from = null, to = nu
     });
 
     const formattedqrcode = qrcode.map((cs) => {
+        const firstEntry = cs.qrCodes?.[0];
+        const { article, category } = resolveArticleAndCategory(
+            firstEntry?.productId,
+            firstEntry?.categoryId
+        );
         const isNew = cs.createdAt.getTime() === cs.updatedAt.getTime();
         return {
             type: "QR-Code",
-            name: `ArticleNo: ${cs.products} `,
+            name: `Article: ${article} (${category})`,
             date: cs.updatedAt,
             Action: isNew
-                ? `Qr Created form productionNo: ${cs.productionNo}`
-                : `Qr-Detail Updated for ${cs.productionNo}`,
+                ? `Qr Created for productionNo: ${cs.productionNo}, article: ${article} (category: ${category})`
+                : `Qr-Detail Updated for ${cs.productionNo}, article: ${article} (category: ${category})`,
         };
     });
 
@@ -269,25 +294,33 @@ exports.getRecentUpdates = async (page, limit, search = "", from = null, to = nu
 
         // Extract stockdata
         const stockDetails =
-            pd.stockdata?.map((item) => ({
-                productionNo: item.productionNo,
-                article: item.article,
-            })) || [];
+            pd.stockdata?.map((item) => {
+                const { article, category } = resolveArticleAndCategory(
+                    item.productId,
+                    item.categoryId
+                );
+                return {
+                    productionNo: item.productionNo,
+                    article,
+                    category,
+                };
+            }) || [];
 
         // Take only the first productionNo (if exists)
         const ProductionNo =
             stockDetails.length > 0 ? stockDetails[0].productionNo : null;
         const article = stockDetails.length > 0 ? stockDetails[0].article : null;
+        const category = stockDetails.length > 0 ? stockDetails[0].category : null;
 
         const isNew = pd.createdAt.getTime() === pd.updatedAt.getTime();
         let actionMessage = "";
 
         if (isNew && pd.toatalQuantity) {
-            actionMessage = `Stock arrived at warehouse ${warehouseName}, Detail: ProductionNo-${ProductionNo}, Article-${article}, Quantity-${pd.toatalQuantity}`;
+            actionMessage = `Stock arrived at warehouse ${warehouseName}, Detail: ProductionNo-${ProductionNo}, Article-${article} (category: ${category}), Quantity-${pd.toatalQuantity}`;
         } else if (pd.dispatchStock != 0) {
-            actionMessage = `Detail: ProductionNo-${ProductionNo}, Article-${article}, Quantity-${pd.dispatchStock} out of Total-Quantity-${pd.toatalQuantity} has been dispatched from warehouse ${warehouseName}`;
+            actionMessage = `Detail: ProductionNo-${ProductionNo}, Article-${article} (category: ${category}), Quantity-${pd.dispatchStock} out of Total-Quantity-${pd.toatalQuantity} has been dispatched from warehouse ${warehouseName}`;
         } else {
-            actionMessage = `Stock updated in warehouse ${warehouseName}, Detial: article: ${article}, total: ${pd.toatalQuantity}`;
+            actionMessage = `Stock updated in warehouse ${warehouseName}, Detial: article: ${article} (category: ${category}), total: ${pd.toatalQuantity}`;
         }
 
         return {

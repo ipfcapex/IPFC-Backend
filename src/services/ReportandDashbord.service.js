@@ -890,24 +890,17 @@ exports.lowstockAlert = async (page = 1, limit = 5) => {
       })
     );
 
-    const productionDocs = await Production.find({ isActive: true }).select(
-      "article category productionQuantity dispatchedQuantity color size type quality"
-    );
+    // Production stock keeps productId/categoryId (article/category live on Product).
+    // Populate productId and resolve flat fields so it keys the same way as orders/stock.
+    const productionDocs = await Production.find({ isActive: true })
+      .select("productId categoryId productionQuantity dispatchedQuantity")
+      .populate({ path: "productId", model: "Product", select: "article category" });
 
     const allProductionStock = productionDocs.map(doc => {
       const availableQty = (doc.productionQuantity || 0) - (doc.dispatchedQuantity || 0);
       if (availableQty <= 0) return null;
-      return {
-        productId: null,
-        categoryId: null,
-        article: doc.article,
-        categoryCode: doc.category?.categoryCode || "UNKNOWN",
-        color: doc.category?.color || doc.color || "UNKNOWN",
-        size: doc.category?.size || doc.size || "UNKNOWN",
-        type: doc.category?.type || doc.type || "UNKNOWN",
-        quality: doc.category?.quality || doc.quality || "UNKNOWN",
-        available: availableQty,
-      };
+      const fields = resolveItemFields(doc);
+      return { ...fields, available: availableQty };
     }).filter(Boolean);
 
     const combinedStock = [...allStock, ...allProductionStock];
@@ -1200,6 +1193,24 @@ exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter 
       }
     },
     ...(searchList.length > 0 ? [{ $match: { [filterField]: { $in: searchList } } }] : []),
+    // Derive the Indian financial year (Apr -> Mar) for each order from its date,
+    // so the report can show the real year even when no year filter is applied.
+    {
+      $addFields: {
+        _fy: {
+          $let: {
+            vars: { m: { $month: "$createdAt" }, y: { $year: "$createdAt" } },
+            in: {
+              $cond: [
+                { $gte: ["$$m", 4] },
+                { $concat: [{ $toString: "$$y" }, "-", { $toString: { $add: ["$$y", 1] } }] },
+                { $concat: [{ $toString: { $subtract: ["$$y", 1] } }, "-", { $toString: "$$y" }] },
+              ],
+            },
+          },
+        },
+      },
+    },
     {
       $facet: {
         articleSummary: [
@@ -1250,6 +1261,7 @@ exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter 
               grandTotalQuantity: { $sum: "$items.quantity" },
               categoryCode: { $first: "$items.categoryCode" },
               totalOrderLines: { $sum: 1 },
+              financialYears: { $addToSet: "$_fy" },
             },
           },
           {
@@ -1259,7 +1271,21 @@ exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter 
               articleOrCategory: "$_id",
               grandTotalQuantity: 1,
               totalOrderLines: 1,
-              ...(financialYear && { financialYear }),
+              // Real financial year(s) for this row, e.g. "2025-2026" or
+              // "2024-2025, 2025-2026" when it spans years (All Years view).
+              financialYear: {
+                $reduce: {
+                  input: "$financialYears",
+                  initialValue: "",
+                  in: {
+                    $cond: [
+                      { $eq: ["$$value", ""] },
+                      "$$this",
+                      { $concat: ["$$value", ", ", "$$this"] },
+                    ],
+                  },
+                },
+              },
             },
           },
         ],

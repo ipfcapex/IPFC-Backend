@@ -426,13 +426,22 @@ exports.getAllbySalesperson = async (req, res) => {
     const pageNum = parseInt(req.query.page, 10) || 1;
     const limitNum = parseInt(req.query.limit, 10) || 10;
     const search = req.query.search || "";
+    const startDate = req.query.startDate || "";
+    const endDate = req.query.endDate || "";
 
     // Query: wishlist must exist & createdBy = logged in user
-    const query = { 
+    const query = {
       isActive: true,
       createdBy: userId,
       items: { $exists: true, $ne: [] },
     };
+
+    // Optional inclusive date range on order creation date (YYYY-MM-DD).
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(`${startDate}T00:00:00.000Z`);
+      if (endDate) query.createdAt.$lte = new Date(`${endDate}T23:59:59.999Z`);
+    }
 
     const applySearch = (items, searchText) => {
       if (!searchText || searchText.trim() === "") return items;

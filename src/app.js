@@ -36,7 +36,7 @@ const server = http.createServer(app);
 
 // Add all your trusted frontend URLs here
 const allowedOrigins = [
-  "http://localhost:5173",
+  "http://localhost:5000",
   "https://apex-shoes-deployed.vercel.app",
   "https://www.apexshoes.org",
   "https://apexshoes.org",

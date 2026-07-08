@@ -97,13 +97,22 @@ exports.getOrderDatabyWH = async (req, res) => {
 
     const WHid = req.user.id || req.user._id;
 
+    // Admin/Administrator/Warehouse Manager can see orders across every
+    // warehouse; all other roles are scoped to the warehouses assigned to
+    // their account.
+    const canSeeAllWarehouses = ["Admin", "Administrator", "Warehouse Manager"].includes(req.user.role);
+
     // Get user's assigned warehouses
     const user = await User.findById(WHid).lean();
     const assignedWarehouses = (user.warehouses || []).map(id => id.toString());
 
-    console.log("Assigned warehouses:", assignedWarehouses);
+    console.log("Assigned warehouses:", assignedWarehouses, "canSeeAllWarehouses:", canSeeAllWarehouses);
 
-    // Pagination setup
+    // Pagination is order-level: skip/limit and the totalItems count below all
+    // operate on SellOrder documents, not on the flattened rows returned in
+    // `data`. Each order fans out into one row per item-per-warehouse below, so
+    // a page of `limit` orders can emit more than `limit` rows. totalPages
+    // therefore counts orders, not table rows -- keep this in mind on the client.
     const page = parseInt(req.query.page, 10) || 1;
     const limit = parseInt(req.query.limit, 10) || 10;
     const skip = (page - 1) * limit;
@@ -113,10 +122,10 @@ exports.getOrderDatabyWH = async (req, res) => {
     // Verify table omits the flag and keeps seeing every order/status.
     const pendingOnly = req.query.pending === "true" || req.query.pending === "1";
 
-    // Build base query
-    const query = {
-      "items.warehouses.warehouse": { $in: assignedWarehouses }
-    };
+    // Build base query. Privileged roles are not restricted to assigned warehouses.
+    const query = canSeeAllWarehouses
+      ? {}
+      : { "items.warehouses.warehouse": { $in: assignedWarehouses } };
 
     if (pendingOnly) {
       query.isActive = true;
@@ -148,6 +157,14 @@ exports.getOrderDatabyWH = async (req, res) => {
     query.$or.push({ "items.warehouses.quantity": numericSearch });
   }
 }
+
+    // Optional inclusive date range on order creation date (YYYY-MM-DD).
+    const { startDate, endDate } = req.query;
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(`${startDate}T00:00:00.000Z`);
+      if (endDate) query.createdAt.$lte = new Date(`${endDate}T23:59:59.999Z`);
+    }
 
     // Fetch orders with pagination
     const [orders, totalItems] = await Promise.all([
@@ -191,7 +208,7 @@ exports.getOrderDatabyWH = async (req, res) => {
       order.items.forEach(item => {
         item.warehouses.forEach(wh => {
           const whId = wh.warehouse?._id?.toString() || wh.warehouse?.toString();
-          if (whId && assignedWarehouses.includes(whId)) {
+          if (whId && (canSeeAllWarehouses || assignedWarehouses.includes(whId))) {
             // Per-warehouse-allocation scan progress:
             // how much of THIS warehouse's allocated quantity has been
             // scanned/dispatched (wh.scanqtyatdispatch out of wh.quantity).

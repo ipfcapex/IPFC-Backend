@@ -428,8 +428,17 @@ exports.stockTransferWithinWarehouses = async ({
     throw new Error(`No product found matching the article: ${article}`);
   }
 
-  // Production holds the productId/categoryId now stored on each QR entry
+  // Production holds the productId/categoryId now stored on each QR entry.
+  // These keys must be present so they map correctly onto the destination QR/Stock.
   const productionDoc = await Product.findOne({ productionNo });
+  if (!productionDoc) {
+    throw new Error(`No production record found for productionNo: ${productionNo}`);
+  }
+  if (!productionDoc.productId || !productionDoc.categoryId) {
+    throw new Error(
+      `Production ${productionNo} is missing productId/categoryId mapping; cannot transfer stock.`
+    );
+  }
 
   // 1️⃣ Check stock in source warehouse (productionNo uniquely identifies the product)
   const fromStock = await Stock.findOne({
@@ -465,8 +474,28 @@ exports.stockTransferWithinWarehouses = async ({
   }).populate("warehouse", "name location");
   if (!qrDoc) throw new Error("No QR document found for given productionNo and article.");
 
-  const qrToDelete = qrDoc.qrCodes.slice(0, quantity);
-  qrDoc.qrCodes = qrDoc.qrCodes.slice(quantity);
+  // Only stock that has cleared the factory (factory-in + factory-out scan) and
+  // has been scanned into the source warehouse (warehouse-in) is transferable.
+  // Units already dispatched out (warehouseDispatch) are not eligible.
+  const isTransferable = (qr) =>
+    qr.factoryScan === true &&
+    qr.factoryinScan === true &&
+    qr.warehouseinScan === true &&
+    qr.warehouseDispatch !== true;
+
+  const eligibleQrCodes = qrDoc.qrCodes.filter(isTransferable);
+  if (eligibleQrCodes.length < quantity) {
+    throw new Error(
+      `Insufficient transferable stock in source warehouse. ` +
+      `Eligible (factory-in, factory-out and warehouse-in scanned): ${eligibleQrCodes.length}, Requested: ${quantity}. ` +
+      `Ensure the stock is factory-in, factory-out and warehouse-in scanned before transfer.`
+    );
+  }
+
+  // Pick exactly `quantity` eligible units and remove them from the source doc.
+  const qrToDelete = eligibleQrCodes.slice(0, quantity);
+  const removedQrIds = new Set(qrToDelete.map((q) => q.qrId));
+  qrDoc.qrCodes = qrDoc.qrCodes.filter((q) => !removedQrIds.has(q.qrId));
   await qrDoc.save();
 
   // 5️⃣ Decrease quantity in source warehouse
@@ -505,23 +534,33 @@ exports.stockTransferWithinWarehouses = async ({
     const qrPayload = {
       factory,
       warehouse: toWarehouseDoc._id,
-      productId: productionDoc?.productId,
-      categoryId: productionDoc?.categoryId,
+      productId: productionDoc.productId,
+      categoryId: productionDoc.categoryId,
       productionNo,
       serial: i + 1,
       qrId,
+      // Goods already cleared the factory at the source warehouse.
       factoryScan: true,
+      factoryinScan: true,
+      // Must be re-scanned into the destination warehouse.
+      warehouseinScan: false,
+      warehouseDispatch: false,
     };
     // console.log("qrPayload", qrPayload)
     const qrBase64 = await QRCode.toDataURL(JSON.stringify(qrPayload));
 
     allQrCodes.push({
-      productId: productionDoc?.productId,
-      categoryId: productionDoc?.categoryId,
+      productId: productionDoc.productId,
+      categoryId: productionDoc.categoryId,
       quantity: "1",
       qrId,
       qrData: qrBase64,
+      // Factory stages already cleared; carried over from source warehouse.
       factoryScan: true,
+      factoryinScan: true,
+      // Pending warehouse-in scan at the destination warehouse.
+      warehouseinScan: false,
+      warehouseDispatch: false,
     });
   }
 
@@ -552,72 +591,14 @@ exports.stockTransferWithinWarehouses = async ({
   await toQrDoc.save();
   // console.log("toQrDoc", toQrDoc);
 
-  // 8️⃣ Create or update Stock entry for toWarehouse
-  let stockActionMessage = "";
-
-  // 8a. Find existing stock for the same warehouse, factory, productionNo
-  let toStock = await Stock.findOne({
-    warehouse: toWarehouse,
-    factory,
-    "stockdata.productionNo": productionNo,
-  }).populate("warehouse", "name location")
-
-  if (!toStock) {
-    // ❌ No stock document exists → create new
-    toStock = new Stock({
-      warehouse: toWarehouse,
-      formwarehouse: fromWarehouse,
-      formqunatity: +quantity,
-      factory,
-      factory_name,
-      toatalQuantity: quantity,
-      isActive: true,
-      stockdata: allQrCodes.map((qr) => ({
-        productionNo,
-        productId: qr.productId,
-        categoryId: qr.categoryId,
-        quantity: Number(qr.quantity),
-        qrData: qr.qrId,
-        dispatched: false,
-      })),
-      formwarehousedata: [
-        {
-          fromwarehouse: fromWarehouse,  // source warehouse
-          formqunatity: quantity        // transferred quantity
-        }
-      ],
-    });
-    stockActionMessage = "New stock document created for destination warehouse.";
-  }
-  else {
-    // formwarehouse: fromWarehouse,
-    // formqunatity: quantity,
-    // ✅ Stock document exists → append new stockdata
-    toStock.stockdata.push(
-      ...allQrCodes.map((qr) => ({
-        productionNo,
-        productId: qr.productId,
-        categoryId: qr.categoryId,
-        quantity: Number(qr.quantity),
-        qrData: qr.qrId,
-        dispatched: false,
-      }))
-    );
-    toStock.formwarehousedata.push({
-      fromwarehouse: fromWarehouse,  // ObjectId of source warehouse
-      formqunatity: quantity          // transferred quantity
-    });
-
-    // Update total quantity
-    toStock.toatalQuantity += quantity;
-    stockActionMessage = "Stock updated: added new items to existing warehouse entry.";
-  }
-
-  await toStock.save();
-  await toStock.populate("warehouse", "name location");
+  // 8️⃣ Stock is intentionally NOT created here for an internal transfer.
+  // The transfer only moves the QR to the destination warehouse with
+  // warehouseinScan=false. The destination Stock entry is created only when the
+  // QR is scanned in at the destination warehouse (createStockByQr), which also
+  // flips warehouseinScan to true ("arrived at warehouse").
 
   return {
-    message: `Form ${qrDoc.warehouse.name} to ${toStock.warehouse.name} Stock quantity ${quantity} are Transfer and Qr created Successfully.`,
+    message: `From ${qrDoc.warehouse.name} to ${toWarehouseDoc.name}: ${quantity} unit(s) transferred. QR created for destination warehouse; scan the QR there to add it to stock.`,
 
     // Deleted QR codes from source
     deletedFromSource: qrToDelete.map((q) => ({
@@ -625,7 +606,7 @@ exports.stockTransferWithinWarehouses = async ({
       qrData: q.qrData,
     })),
 
-    // Newly created QR codes in destination
+    // Newly created QR codes in destination (pending warehouse-in scan)
     createdInDestination: allQrCodes.map((q) => ({
       qrId: q.qrId,
       qrData: q.qrData,
@@ -644,18 +625,8 @@ exports.stockTransferWithinWarehouses = async ({
     // Action message for QR model
     qrAction: qrActionMessage,
 
-    // Newly created/added stock items in destination
-    stockCreated: toStock
-      ? allQrCodes.map((q) => ({
-        qrId: q.qrId,
-        productionNo,
-        article,
-        size: categoryData.size,
-        color: categoryData.color,
-        type: categoryData.type,
-        quality: categoryData.quality,
-      }))
-      : [],
+    // Stock is added at scan time, not during the transfer
+    stockCreated: [],
 
     // Deleted stock items from source
     stockDeleted: qrToDelete.map((q) => ({
@@ -663,7 +634,7 @@ exports.stockTransferWithinWarehouses = async ({
       productionNo,
       article,
     })),
-  }
+  };
 }
 
 // Get all factory-scanned QR codes from QR model, grouped by productionNo.
@@ -949,7 +920,11 @@ exports.getInternalTransfersByTime = async (page = 1, limit = 10, search = "") =
       { $lookup: { from: "warehouses", localField: "warehouse", foreignField: "_id", as: "toWarehouse" } },
       { $unwind: "$toWarehouse" },
       { $lookup: { from: "warehouses", localField: "formwarehousedata.fromwarehouse", foreignField: "_id", as: "fromWarehouse" } },
-      { $unwind: "$fromWarehouse" }
+      { $unwind: "$fromWarehouse" },
+      // Article is not stored on stockdata; resolve it from the referenced Product.
+      { $addFields: { firstProductId: { $arrayElemAt: ["$stockdata.productId", 0] } } },
+      { $lookup: { from: "products", localField: "firstProductId", foreignField: "_id", as: "productDetails" } },
+      { $addFields: { article: { $arrayElemAt: ["$productDetails.article", 0] } } }
     ];
 
     // Apply search after lookup
@@ -958,7 +933,7 @@ exports.getInternalTransfersByTime = async (page = 1, limit = 10, search = "") =
         $match: {
           $or: [
             { productionNo: { $regex: regex } },
-            { "stockdata.article": { $regex: regex } },
+            { article: { $regex: regex } },
             { "toWarehouse.name": { $regex: regex } },
             { "fromWarehouse.name": { $regex: regex } }
           ]
@@ -974,7 +949,7 @@ exports.getInternalTransfersByTime = async (page = 1, limit = 10, search = "") =
         fromWarehouse: "$fromWarehouse.name",
         toWarehouse: "$toWarehouse.name",
         quantity: "$formwarehousedata.formqunatity",
-        articles: { $arrayElemAt: ["$stockdata.article", 0] },
+        articles: "$article",
         createdAt: "$formwarehousedata.createdAt"
       }
     });
