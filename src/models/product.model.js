@@ -20,7 +20,7 @@ const categorySchema = new mongoose.Schema({
   },
   pkg: { type: mongoose.Schema.Types.Mixed, required: false },
   articleCode: { type: mongoose.Schema.Types.Mixed },
-  image: { type: [String], required: true },
+  image: { type: [String], required: false, default: [""] },
   isActive: { type: Boolean, default: true }
 }, { _id: true });
 

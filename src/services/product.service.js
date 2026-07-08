@@ -11,7 +11,8 @@ require('dotenv').config();
 
 //Add one Product at a time(Current not in use)
 const createProduct = async (data, file) => {
-  const { article, category } = data;
+  const { article: rawArticle, category } = data;
+  const article = typeof rawArticle === 'string' ? rawArticle.replace(/\s+/g, '') : rawArticle;
 
   if (!article || !Array.isArray(category) || category.length !== 1) {
     throw new Error("Article and exactly one category are required.");
@@ -24,6 +25,10 @@ const createProduct = async (data, file) => {
     throw new Error("Category must have categoryCode and color");
   }
 
+  if (typeof categoryCode === 'string') categoryCode = categoryCode.replace(/\s+/g, '');
+  if (typeof color === 'string') color = color.replace(/\s+/g, '');
+  if (typeof size === 'string') size = size.replace(/\s+/g, '');
+
   // Keep size as a string
   size = size || "";
 
@@ -31,6 +36,8 @@ const createProduct = async (data, file) => {
   type = Array.isArray(type) ? type : [type || ""];
   quality = Array.isArray(quality) ? quality : [quality || ""];
 
+  cat.categoryCode = categoryCode;
+  cat.color = color;
   cat.size = size;
   cat.type = type;
   cat.quality = quality;
@@ -335,7 +342,8 @@ const createProduct = async (data, file) => {
 
 //Get all product
 const createProductTypeTwo = async (data) => {
-  const { article, categoryCode, sizes, colors, types, qualities, articleCode, files, pkgs } = data;
+  const { article: rawArticle, categoryCode, sizes, colors, types, qualities, articleCode, files, pkgs } = data;
+  const article = typeof rawArticle === 'string' ? rawArticle.replace(/\s+/g, '') : rawArticle;
 
   if (!sizes || !Array.isArray(sizes) || sizes.length === 0) {
     throw new Error("sizes must be a non-empty array");
@@ -346,14 +354,18 @@ const createProductTypeTwo = async (data) => {
   const uploadedFiles = Array.isArray(files) ? files : [];
   const pkgsArr = Array.isArray(pkgs) ? pkgs : [];
 
+  const cleanCategoryCode = typeof categoryCode === 'string' ? categoryCode.replace(/\s+/g, '') : categoryCode;
   const newCategories = [];
 
   for (let i = 0; i < sizes.length; i++) {
-    const size = sizes[i] || "";
+    const rawSize = sizes[i] || "";
+    const size = typeof rawSize === 'string' ? rawSize.replace(/\s+/g, '') : rawSize;
     const colorRaw = colors && colors[i] ? colors[i] : "";
-    const color = colorRaw.charAt(0).toUpperCase() + colorRaw.slice(1);
+    const colorClean = typeof colorRaw === 'string' ? colorRaw.replace(/\s+/g, '') : colorRaw;
+    const color = colorClean.charAt(0).toUpperCase() + colorClean.slice(1);
 
-    const pkg = pkgsArr[i] || "";
+    const rawPkg = pkgsArr[i] || "";
+    const pkg = typeof rawPkg === 'string' ? rawPkg.replace(/\s+/g, '') : rawPkg;
     const file = uploadedFiles[i] || null;
 
     // Upload file if exists
@@ -370,7 +382,7 @@ const createProductTypeTwo = async (data) => {
 
     // Create category object
     const cat = {
-      categoryCode,
+      categoryCode: cleanCategoryCode,
       size,
       color,
       type: selectedTypes,
@@ -666,10 +678,36 @@ const updateProductByCategoryId = async (categoryId, updateData, file) => {
   const category = product.category[catIndex];
 
   // ✅ Update allowed fields
-  if (updateData.color) category.color = updateData.color;
-  if (updateData.size) category.size = updateData.size;
-  if (updateData.articleCode) category.articleCode = updateData.articleCode;
-  if (updateData.pkg) category.pkg = updateData.pkg;
+  if (updateData.article) {
+    let cleanArticle = updateData.article;
+    if (typeof cleanArticle === 'string') cleanArticle = cleanArticle.replace(/\s+/g, '');
+    product.article = cleanArticle;
+  }
+  if (updateData.categoryCode) {
+    let cleanCategoryCode = updateData.categoryCode;
+    if (typeof cleanCategoryCode === 'string') cleanCategoryCode = cleanCategoryCode.replace(/\s+/g, '');
+    category.categoryCode = cleanCategoryCode;
+  }
+  if (updateData.color) {
+    let cleanColor = updateData.color;
+    if (typeof cleanColor === 'string') cleanColor = cleanColor.replace(/\s+/g, '');
+    category.color = cleanColor;
+  }
+  if (updateData.size) {
+    let cleanSize = updateData.size;
+    if (typeof cleanSize === 'string') cleanSize = cleanSize.replace(/\s+/g, '');
+    category.size = cleanSize;
+  }
+  if (updateData.articleCode) {
+    let cleanArticleCode = updateData.articleCode;
+    if (typeof cleanArticleCode === 'string') cleanArticleCode = cleanArticleCode.replace(/\s+/g, '');
+    category.articleCode = cleanArticleCode;
+  }
+  if (updateData.pkg) {
+    let cleanPkg = updateData.pkg;
+    if (typeof cleanPkg === 'string') cleanPkg = cleanPkg.replace(/\s+/g, '');
+    category.pkg = cleanPkg;
+  }
 
   // ✅ Handle file upload exactly like createProduct
   if (file) {
@@ -730,7 +768,7 @@ const parseCSV = (filePath) => {
         try {
           if (!row.article || !row.categoryCode) return;
 
-          const articleNumber = row.article.trim();
+          const articleNumber = row.article.replace(/\s+/g, '');
 
           // Helper function to normalize color casing
           const normalizeColor = (color) => {
@@ -742,7 +780,7 @@ const parseCSV = (filePath) => {
           const colors = row.color
             ? row.color
               .split(",")
-              .map((c) => normalizeColor(c.trim()))
+              .map((c) => normalizeColor(c.replace(/\s+/g, '')))
               .filter(Boolean)
             : [""];
 
@@ -754,14 +792,15 @@ const parseCSV = (filePath) => {
             ? row.quality.split(",").map((q) => q.trim()).filter(Boolean)
             : [];
 
-          const size = row.size?.trim() || "";
+          const size = row.size ? row.size.replace(/\s+/g, '') : "";
 
           let pkg = null;
           if (row.pkg) {
             try {
               pkg = JSON.parse(row.pkg); // if JSON format
+              if (typeof pkg === 'string') pkg = pkg.replace(/\s+/g, '');
             } catch (e) {
-              pkg = row.pkg.trim(); // if normal string
+              pkg = row.pkg.replace(/\s+/g, ''); // if normal string
             }
           }
 
@@ -773,10 +812,12 @@ const parseCSV = (filePath) => {
             };
           }
 
+          const categoryCodeClean = row.categoryCode ? row.categoryCode.replace(/\s+/g, '') : "";
+
           // Create a category entry for each color
           colors.forEach((color) => {
             const category = {
-              categoryCode: row.categoryCode.trim(),
+              categoryCode: categoryCodeClean,
               color,
               size,
               type: types,

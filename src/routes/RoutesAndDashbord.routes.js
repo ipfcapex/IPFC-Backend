@@ -26,4 +26,7 @@ router.get('/sales-graph', ReportAndDashbordController.getSalesGraphatDelivery);
 
 
 router.post('/filterStock', ReportAndDashbordController.getStockReport);
+router.get('/financial-years', ReportAndDashbordController.getFinancialYears);
+router.post('/financial-years', ReportAndDashbordController.createFinancialYear);
+
 module.exports = router;

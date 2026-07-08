@@ -9,7 +9,7 @@ const { Warehouse } = require("../models");
 const addArticle = async (data) => {
   try {
     const {
-      articleNumber,
+      articleNumber: rawArticleNumber,
       warehouseId,
       size,
       type,
@@ -19,6 +19,10 @@ const addArticle = async (data) => {
       quantity,
       images = [],
     } = data;
+
+    const articleNumber = typeof rawArticleNumber === 'string'
+      ? rawArticleNumber.replace(/\s+/g, '')
+      : rawArticleNumber;
 
     //Fetch factoryIds from warehouse
     const warehouse = await Warehouse.findById(warehouseId).select('factoryIds');

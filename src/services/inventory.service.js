@@ -336,6 +336,9 @@ exports.getStockByWarehouseAndFactory = async (page = 1, limit = 10, search = ""
     const regex = new RegExp(search.trim(), "i");
     finalList = finalList.filter(item =>
       regex.test(item.article || "") ||
+      regex.test(item.categoryCode || "") ||
+      regex.test(item.color || "") ||
+      regex.test(item.size || "") ||
       regex.test(item.factory || "") ||
       regex.test(item.warehouse || "")
     );

@@ -15,8 +15,11 @@ exports.getsellReport = async (filter = {}, page = 1, limit = 10, search = "") =
     ...filter,
   };
 
-  // 1. Get all matching orders (no skip/limit here)
-  const sellorder = await SellOrder.find(query).populate("customer", "name").sort({ createdAt: -1 });
+  // 1. Get all matching orders and populate customer + items.productId
+  const sellorder = await SellOrder.find(query)
+    .populate("customer", "name")
+    .populate("items.productId", "article category")
+    .sort({ createdAt: -1 });
 
   function timeDMY(date) {
     const d = new Date(date);
@@ -25,15 +28,33 @@ exports.getsellReport = async (filter = {}, page = 1, limit = 10, search = "") =
     const year = d.getFullYear();
     return `${day}/${month}/${year}`;
   }
-  // 2. Flatten items
+
+  // 2. Flatten items and resolve article + category details
   let allItems = sellorder.flatMap((order) =>
-    order.items.map((item) => ({
-      salesOrderNo: order.salesOrderNo,
-      article: item.article,
-      customer: order.customer?.name || "N/A",
-      quantity: item.quantity,
-      orderDate: timeDMY(order.createdAt),
-    }))
+    order.items.map((item) => {
+      const product = item.productId || {};
+      const articleName = product.article || "N/A";
+
+      // Match the category subdocument by categoryId
+      const matchedCategory = Array.isArray(product.category)
+        ? product.category.find(
+            (cat) => cat._id && item.categoryId && cat._id.toString() === item.categoryId.toString()
+          )
+        : null;
+
+      return {
+        salesOrderNo: order.salesOrderNo,
+        article: articleName,
+        categoryCode: matchedCategory?.categoryCode || "N/A",
+        color: matchedCategory?.color || "N/A",
+        size: matchedCategory?.size || "N/A",
+        type: Array.isArray(matchedCategory?.type) ? matchedCategory.type.join(", ") : (matchedCategory?.type || "N/A"),
+        quality: Array.isArray(matchedCategory?.quality) ? matchedCategory.quality.join(", ") : (matchedCategory?.quality || "N/A"),
+        customer: order.customer?.name || "N/A",
+        quantity: item.quantity,
+        orderDate: timeDMY(order.createdAt),
+      };
+    })
   );
 
   // 3. Apply search
@@ -44,7 +65,9 @@ exports.getsellReport = async (filter = {}, page = 1, limit = 10, search = "") =
         regex.test(item.article) ||
         regex.test(item.salesOrderNo) ||
         regex.test(item.customer) ||
-        regex.test(item.orderDate) // ✅ you can include date in search too
+        regex.test(item.categoryCode) ||
+        regex.test(item.color) ||
+        regex.test(item.orderDate)
     );
   }
 
@@ -64,31 +87,48 @@ exports.getsellReport = async (filter = {}, page = 1, limit = 10, search = "") =
   };
 };
 
+
 //Get Customer Report
 exports.getCustomerReport = async (page, limit, search = "") => {
   const pageNum = parseInt(page, 10) || 1;
   const limitNum = parseInt(limit, 10) || 10;
   const skip = (pageNum - 1) * limitNum;
 
-  const pipeline = [
+  const basePipeline = [
     {
       $match: {
-        customer: { $ne: null, $ne: "" },
+        customer: { $ne: null },
         isActive: true,
         accountSectionApproval: "APPROVED",
         inventoryManagerApproval: "APPROVED",
       },
     },
     { $unwind: "$items" },
+    // Lookup product to get article name
+    {
+      $lookup: {
+        from: "products",
+        localField: "items.productId",
+        foreignField: "_id",
+        as: "productDetails",
+      },
+    },
+    {
+      $addFields: {
+        articleName: { $arrayElemAt: ["$productDetails.article", 0] },
+      },
+    },
+    // Group by customer + article name
     {
       $group: {
         _id: {
           customer: "$customer",
-          article: "$items.article",
+          article: "$articleName",
         },
         totalQuantity: { $sum: "$items.quantity" },
       },
     },
+    // Lookup customer details
     {
       $lookup: {
         from: "customers",
@@ -108,52 +148,29 @@ exports.getCustomerReport = async (page, limit, search = "") => {
       },
     },
     { $sort: { totalQuantity: -1 } },
-    { $skip: skip },
-    { $limit: limitNum },
   ];
 
-  // Apply search filter if provided
-  if (search && search.trim() !== "") {
-    pipeline.push({
-      $match: {
-        $or: [
-          { customer: { $regex: search, $options: "i" } },
-          { article: { $regex: search, $options: "i" } },
-          { city: { $regex: search, $options: "i" } },
-        ],
-      },
-    });
-  }
-
-
-  const data = await SellOrder.aggregate(pipeline);
-
-  // For pagination info
-  const totalCountPipeline = [
-    {
-      $match: {
-        customer: { $ne: null, $ne: "" },
-        isActive: true,
-        accountSectionApproval: "APPROVED",
-        inventoryManagerApproval: "APPROVED",
-      },
-    },
-    { $unwind: "$items" },
-    {
-      $group: {
-        _id: {
-          customer: "$customer",
-          article: "$items.article",
+  // Apply search filter before skip/limit
+  const searchStage = search && search.trim() !== ""
+    ? [{
+        $match: {
+          $or: [
+            { customer: { $regex: search, $options: "i" } },
+            { article: { $regex: search, $options: "i" } },
+            { city: { $regex: search, $options: "i" } },
+          ],
         },
-      },
-    },
-    { $count: "total" },
-  ];
+      }]
+    : [];
 
-  const totalResult = await SellOrder.aggregate(totalCountPipeline);
+  const [data, totalResult] = await Promise.all([
+    SellOrder.aggregate([...basePipeline, ...searchStage, { $skip: skip }, { $limit: limitNum }]),
+    SellOrder.aggregate([...basePipeline, ...searchStage, { $count: "total" }]),
+  ]);
+
   const totalItems = totalResult.length > 0 ? totalResult[0].total : 0;
   const totalPages = Math.ceil(totalItems / limitNum);
-  console.log("totalItems:", totalItems);
+
   return {
     success: true,
     data: data.map((item) => ({
@@ -169,6 +186,7 @@ exports.getCustomerReport = async (page, limit, search = "") => {
     },
   };
 };
+
 
 //stock Report By Warehouse
 exports.getStockbyWarehouse = async (filter = {}, page = 1, limit = 10) => {
@@ -1145,6 +1163,42 @@ exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter 
   const buildPipeline = (match, fyMonth = null, q = null) => [
     { $match: match },
     { $unwind: "$items" },
+    // Resolve article name and category details from products collection
+    {
+      $lookup: {
+        from: "products",
+        localField: "items.productId",
+        foreignField: "_id",
+        as: "productDetails"
+      }
+    },
+    { $unwind: { path: "$productDetails", preserveNullAndEmptyArrays: true } },
+    {
+      $addFields: {
+        "items.article": "$productDetails.article",
+        "items.matchedCategory": {
+          $filter: {
+            input: "$productDetails.category",
+            as: "cat",
+            cond: { $eq: ["$$cat._id", "$items.categoryId"] }
+          }
+        }
+      }
+    },
+    {
+      $addFields: {
+        "items.matchedCategory": { $arrayElemAt: ["$items.matchedCategory", 0] }
+      }
+    },
+    {
+      $addFields: {
+        "items.categoryCode": "$items.matchedCategory.categoryCode",
+        "items.color": "$items.matchedCategory.color",
+        "items.size": "$items.matchedCategory.size",
+        "items.type": "$items.matchedCategory.type",
+        "items.quality": "$items.matchedCategory.quality"
+      }
+    },
     ...(searchList.length > 0 ? [{ $match: { [filterField]: { $in: searchList } } }] : []),
     {
       $facet: {

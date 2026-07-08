@@ -339,30 +339,73 @@ exports.getProducts = async (page = 1, limit = 10, search = "") => {
   const limitNum = parseInt(limit, 10) || 10;
   const skip = (pageNum - 1) * limitNum;
 
-  // Base query
-  const query = { isActive: true };
-
-  // Apply search at DB level
   if (search && search.trim() !== "") {
+    // Use aggregate to support searching across productionNo and article (from joined Product)
     const regex = new RegExp(search.trim(), "i");
-    query.$or = [
-      { name: { $regex: regex } },
-      { article: { $regex: regex } },
-      { productionNo: { $regex: regex } }
+
+    const pipeline = [
+      { $match: { isActive: true } },
+      {
+        $lookup: {
+          from: "products",
+          localField: "productId",
+          foreignField: "_id",
+          as: "productDetails",
+        },
+      },
+      { $unwind: { path: "$productDetails", preserveNullAndEmpty: true } },
+      {
+        $match: {
+          $or: [
+            { productionNo: { $regex: regex } },
+            { "productDetails.article": { $regex: regex } },
+          ],
+        },
+      },
+      { $sort: { createdAt: -1 } },
     ];
+
+    const [countResult, products] = await Promise.all([
+      Production.aggregate([...pipeline, { $count: "total" }]),
+      Production.aggregate([...pipeline, { $skip: skip }, { $limit: limitNum }]),
+    ]);
+
+    const totalItems = countResult[0]?.total || 0;
+    const totalPages = Math.ceil(totalItems / limitNum);
+
+    // Fetch fully populated versions of matched IDs for consistent response shape
+    const ids = products.map((p) => p._id);
+    const populated = await Production.find({ _id: { $in: ids } })
+      .populate("factory", "name")
+      .populate("productId", "article category")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return {
+      success: true,
+      products: populated.map(attachCategoryDetail),
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        totalItems,
+      },
+    };
   }
 
-
-  // Fetch products with pagination
+  // No search: simple paginated find
   const [products, totalItems] = await Promise.all([
-    Production.find(query)
+    Production.find({ isActive: true })
       .populate("factory", "name")
       .populate("productId", "article category")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNum)
       .lean(),
+<<<<<<< Updated upstream
     Production.countDocuments(query),
+=======
+    Production.countDocuments({ isActive: true }),
+>>>>>>> Stashed changes
   ]);
 
   const totalPages = Math.ceil(totalItems / limitNum);
@@ -377,6 +420,7 @@ exports.getProducts = async (page = 1, limit = 10, search = "") => {
     },
   };
 };
+
 
 //Get production data wit out Qr data
 exports.getproductionDatawithoutQR = async (page = 1, limit = 10, search = "") => {

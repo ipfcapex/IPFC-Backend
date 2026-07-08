@@ -1,5 +1,5 @@
 const { ReportandDashbordService } = require('../services');
-const { Order } = require("../models");
+const { Order, FinancialYear } = require("../models");
 
 exports.getsellReports = async (req, res, next) => {
   try {
@@ -269,4 +269,58 @@ exports.getStockReport = async (req, res) => {
     });
   }
 };
+
+exports.getFinancialYears = async (req, res) => {
+  try {
+    const years = await FinancialYear.find({ isActive: true }).sort({ year: 1 });
+    return res.status(200).json({
+      success: true,
+      message: "Financial years retrieved successfully",
+      data: years
+    });
+  } catch (error) {
+    console.error("Error retrieving financial years:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to retrieve financial years",
+      error: error.message
+    });
+  }
+};
+
+exports.createFinancialYear = async (req, res) => {
+  try {
+    const { year } = req.body;
+    if (!year) {
+      return res.status(400).json({
+        success: false,
+        message: "Year is required"
+      });
+    }
+
+    // Check if it already exists
+    const existing = await FinancialYear.findOne({ year: year.trim() });
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: "Financial year already exists"
+      });
+    }
+
+    const newYear = await FinancialYear.create({ year: year.trim() });
+    return res.status(201).json({
+      success: true,
+      message: "Financial year created successfully",
+      data: newYear
+    });
+  } catch (error) {
+    console.error("Error creating financial year:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create financial year",
+      error: error.message
+    });
+  }
+};
+
 
