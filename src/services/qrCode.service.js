@@ -632,7 +632,13 @@ exports.stockTransferWithinWarehouses = async ({
       productId: q.productId,
       categoryId: q.categoryId,
       productionNo,
-      quantity: q.quantity
+      quantity: q.quantity,
+      article,
+      size: categoryData.size,
+      color: categoryData.color,
+      type: categoryData.type,
+      quality: categoryData.quality,
+      categoryCode: categoryData.categoryCode,
     })),
 
     // Action message for QR model
@@ -643,7 +649,11 @@ exports.stockTransferWithinWarehouses = async ({
       ? allQrCodes.map((q) => ({
         qrId: q.qrId,
         productionNo,
-        article
+        article,
+        size: categoryData.size,
+        color: categoryData.color,
+        type: categoryData.type,
+        quality: categoryData.quality,
       }))
       : [],
 
