@@ -401,11 +401,7 @@ exports.getProducts = async (page = 1, limit = 10, search = "") => {
       .skip(skip)
       .limit(limitNum)
       .lean(),
-<<<<<<< Updated upstream
-    Production.countDocuments(query),
-=======
     Production.countDocuments({ isActive: true }),
->>>>>>> Stashed changes
   ]);
 
   const totalPages = Math.ceil(totalItems / limitNum);
