@@ -112,22 +112,27 @@ const attachCategoryDetail = (prod) => {
 // };
 
 const applyProductionToWishlists = async (productionData, currentAvailableQty = 0) => {
-  const { article, categoryCode, color, size, type, quality, productionQuantity } = productionData;
+  // ✅ FIX: WishList subdocuments store productId + categoryId (ObjectIds),
+  //    NOT text fields like article/categoryCode/color/size/type/quality.
+  //    Querying by those missing fields always returned 0 results.
+  const { productId, categoryId, productionQuantity } = productionData;
 
   // Total stock available including production
   let totalAvailableQty = currentAvailableQty + productionQuantity;
 
-  // Find all relevant wishlists, sorted FIFO
+  // Find all relevant wishlists by the stored ObjectIds, sorted FIFO
   const wishlists = await Wishlist.find({
-    "WishList.article": article,
-    "WishList.categoryCode": categoryCode,
-    "WishList.color": color,
-    "WishList.size": size,
-    "WishList.type": type,
-    "WishList.quality": quality,
+    WishList: {
+      $elemMatch: {
+        productId: new mongoose.Types.ObjectId(productId),
+        categoryId: new mongoose.Types.ObjectId(categoryId)
+      }
+    },
     isActive: true,
     wishlistStockTime: null
   }).sort({ createdAt: 1 }); // Oldest first
+
+  console.log(`🔍 applyProductionToWishlists: found ${wishlists.length} matching wishlist(s) for productId=${productId}, categoryId=${categoryId}`);
 
   if (!wishlists.length) return;
 
@@ -143,15 +148,11 @@ const applyProductionToWishlists = async (productionData, currentAvailableQty = 
     const creatorWishlists = groupedByCreator[creatorId];
 
     for (const wishlist of creatorWishlists) {
-      // Total quantity requested for this wishlist for the given variant
+      // Total quantity requested for this wishlist for the given productId + categoryId
       const totalWishlistQty = wishlist.WishList
         .filter(i =>
-          i.article === article &&
-          i.categoryCode === categoryCode &&
-          i.color === color &&
-          i.size === size &&
-          i.type === type &&
-          i.quality === quality
+          String(i.productId) === String(productId) &&
+          String(i.categoryId) === String(categoryId)
         )
         .reduce((sum, i) => sum + i.quantity, 0);
 
@@ -303,14 +304,10 @@ exports.createProduct = async (data) => {
 
     const production = await Production.create(productionData);
 
-// Step 9: Apply production to wishlists
+// Step 9: Apply production to wishlists (match by stored ObjectIds, not text fields)
     await applyProductionToWishlists({
-      article: data.article,
-      categoryCode: data.categoryCode,
-      color: data.color,
-      size: data.size,
-      type: selectedType,
-      quality: selectedQuality,
+      productId: productByArticle._id,
+      categoryId: matchedCategory._id,
       productionQuantity: data.productionQuantity
     });
 

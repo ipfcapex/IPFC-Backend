@@ -268,9 +268,36 @@ exports.createStockByQr = async (qrImage) => {
     // 7️⃣ Populate factory and warehouse names before returning
     const populatedStock = await Stock.findById(stockDoc._id)
       .populate("factory", "name")
-      .populate("warehouse", "name");
+      .populate("warehouse", "name")
+      .populate({
+         path: "stockdata.productId",
+         select: "article category"
+      });
 
-    return populatedStock;
+    const stockObj = populatedStock.toObject();
+    if (stockObj.stockdata && Array.isArray(stockObj.stockdata)) {
+      stockObj.stockdata = stockObj.stockdata.map((item) => {
+        const product = item.productId;
+        let matchedCategory = null;
+        if (product && Array.isArray(product.category) && item.categoryId) {
+          matchedCategory = product.category.find(
+            (c) => c._id.toString() === item.categoryId.toString()
+          );
+        }
+        return {
+          ...item,
+          productId: product ? product._id : item.productId,
+          article: product ? product.article : null,
+          categoryCode: matchedCategory ? matchedCategory.categoryCode : null,
+          color: matchedCategory ? matchedCategory.color : null,
+          size: matchedCategory ? matchedCategory.size : null,
+          type: matchedCategory ? (Array.isArray(matchedCategory.type) ? matchedCategory.type[0] : matchedCategory.type) : null,
+          quality: matchedCategory ? (Array.isArray(matchedCategory.quality) ? matchedCategory.quality[0] : matchedCategory.quality) : null,
+        };
+      });
+    }
+
+    return stockObj;
   } catch (error) {
     console.error("Error in createStockByQr service:", error);
     throw new Error(error.message || "Something went wrong while creating stock");
@@ -584,11 +611,23 @@ exports.scanAndDispatch = async (req) => {
 
   await order.save();
 
+  const product = await Product.findById(stockItem.productId).select("article category");
+  let matchedCategory = null;
+  if (product && product.category) {
+    matchedCategory = product.category.find(c => String(c._id) === String(stockItem.categoryId));
+  }
+
   return {
     factory: stock.factory?.name || "N/A",
     warehouse: stock.warehouse?.name || "N/A",
     productId: stockItem.productId,
     categoryId: stockItem.categoryId,
+    article: product ? product.article : null,
+    categoryCode: matchedCategory ? matchedCategory.categoryCode : null,
+    color: matchedCategory ? matchedCategory.color : null,
+    size: matchedCategory ? matchedCategory.size : null,
+    type: matchedCategory ? (Array.isArray(matchedCategory.type) ? matchedCategory.type[0] : matchedCategory.type) : null,
+    quality: matchedCategory ? (Array.isArray(matchedCategory.quality) ? matchedCategory.quality[0] : matchedCategory.quality) : null,
     quantity: stockItem.quantity,
     qrData: stockItem.qrData,
     dispatched: stockItem.dispatched,
