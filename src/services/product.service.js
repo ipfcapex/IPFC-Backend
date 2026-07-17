@@ -790,7 +790,17 @@ const parseCSV = (filePath) => {
               .split(",")
               .map((c) => normalizeColor(c.replace(/\s+/g, '')))
               .filter(Boolean)
-            : [""];
+            : [];
+
+          // color is required by the schema, so a blank color cell (e.g. the
+          // ",," rows like "CS - 201,COASTER LIST,6X10,,...") would fail
+          // validation and abort the entire upload. Skip such rows instead.
+          if (colors.length === 0) {
+            console.warn(
+              `⚠️ Skipping row with empty color: article=${row.article}, category=${categoryCodeRaw}, size=${row.size || ''}`
+            );
+            return;
+          }
 
           // Parse other multi-select fields
           const types = row.type
