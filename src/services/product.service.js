@@ -678,15 +678,20 @@ const updateProductByCategoryId = async (categoryId, updateData, file) => {
   const category = product.category[catIndex];
 
   // ✅ Update allowed fields
+  // NOTE: article, categoryCode, articleCode and pkg are Schema.Types.Mixed.
+  // Mongoose does not auto-detect in-place changes to Mixed fields, so each
+  // mutated Mixed path must be flagged with markModified() or save() skips it.
   if (updateData.article) {
     let cleanArticle = updateData.article;
     if (typeof cleanArticle === 'string') cleanArticle = cleanArticle.replace(/\s+/g, '');
     product.article = cleanArticle;
+    product.markModified('article');
   }
   if (updateData.categoryCode) {
     let cleanCategoryCode = updateData.categoryCode;
     if (typeof cleanCategoryCode === 'string') cleanCategoryCode = cleanCategoryCode.replace(/\s+/g, '');
     category.categoryCode = cleanCategoryCode;
+    product.markModified(`category.${catIndex}.categoryCode`);
   }
   if (updateData.color) {
     let cleanColor = updateData.color;
@@ -702,11 +707,13 @@ const updateProductByCategoryId = async (categoryId, updateData, file) => {
     let cleanArticleCode = updateData.articleCode;
     if (typeof cleanArticleCode === 'string') cleanArticleCode = cleanArticleCode.replace(/\s+/g, '');
     category.articleCode = cleanArticleCode;
+    product.markModified(`category.${catIndex}.articleCode`);
   }
   if (updateData.pkg) {
     let cleanPkg = updateData.pkg;
     if (typeof cleanPkg === 'string') cleanPkg = cleanPkg.replace(/\s+/g, '');
     category.pkg = cleanPkg;
+    product.markModified(`category.${catIndex}.pkg`);
   }
 
   // ✅ Handle file upload exactly like createProduct
@@ -766,7 +773,8 @@ const parseCSV = (filePath) => {
       .pipe(csv())
       .on("data", (row) => {
         try {
-          if (!row.article || !row.categoryCode) return;
+          const categoryCodeRaw = row.categoryCode || row.category;
+          if (!row.article || !categoryCodeRaw) return;
 
           const articleNumber = row.article.replace(/\s+/g, '');
 
@@ -812,7 +820,7 @@ const parseCSV = (filePath) => {
             };
           }
 
-          const categoryCodeClean = row.categoryCode ? row.categoryCode.replace(/\s+/g, '') : "";
+          const categoryCodeClean = categoryCodeRaw ? categoryCodeRaw.replace(/\s+/g, '') : "";
 
           // Create a category entry for each color
           colors.forEach((color) => {
