@@ -426,6 +426,7 @@ exports.getproductionDatawithoutQR = async (page = 1, limit = 10, search = "") =
 
   const query = {
     productionNo: { $nin: qrProductions || [] },
+    isActive: true,
   };
 
   if (search) {
