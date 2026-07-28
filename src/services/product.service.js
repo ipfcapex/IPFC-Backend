@@ -380,48 +380,36 @@ const createProductTypeTwo = async (data) => {
       }
     }
 
-    // Create category object
-    const cat = {
-      categoryCode: cleanCategoryCode,
-      size,
-      color,
-      type: selectedTypes,
-      quality: selectedQualities,
-      pkg,
-      articleCode: articleCode || undefined,
-      image: uploadedImageUrl,
-      isActive: true,
-    };
-
-    // Generate SQU
-    const typeCode =
-      selectedTypes.includes("Soft") && selectedTypes.includes("Hard")
-        ? "SH"
-        : selectedTypes.includes("Soft")
-          ? "S"
-          : selectedTypes.includes("Hard")
-            ? "H"
-            : "X";
-
+    // ✅ NORMALIZATION: Create one category entry per type-quality combination
     const colorCode = color ? color.toUpperCase().replace(/\s+/g, "") : "X";
-    const categoryCodeChar = categoryCode
-      ? categoryCode.substring(0, 5).toUpperCase()
+    const categoryCodeChar = cleanCategoryCode
+      ? cleanCategoryCode.substring(0, 5).toUpperCase()
       : "XXXXX";
 
-    const qualityCode =
-      selectedQualities.includes("A") && selectedQualities.includes("B")
-        ? "AB"
-        : selectedQualities.includes("A")
-          ? "A"
-          : selectedQualities.includes("B")
-            ? "B"
-            : "X";
+    for (const singleType of selectedTypes) {
+      for (const singleQuality of selectedQualities) {
+        const typeCode = singleType === "Soft" ? "S" : singleType === "Hard" ? "H" : "C";
+        const qualityCode = singleQuality === "A" ? "A" : singleQuality === "B" ? "B" : "X";
 
-    const randomNum = Math.floor(1000 + Math.random() * 9000);
-    const SQU = `#${randomNum}${article}${categoryCodeChar}${colorCode}${size}${typeCode}${qualityCode}`;
-    cat.SQU = SQU;
+        const randomNum = Math.floor(1000 + Math.random() * 9000);
+        const SQU = `#${randomNum}${article}${categoryCodeChar}${colorCode}${size}${typeCode}${qualityCode}`;
 
-    newCategories.push(cat);
+        const cat = {
+          categoryCode: cleanCategoryCode,
+          size,
+          color,
+          type: [singleType],       // exactly ONE type per category
+          quality: [singleQuality], // exactly ONE quality per category
+          pkg,
+          SQU,
+          articleCode: articleCode || undefined,
+          image: uploadedImageUrl,
+          isActive: true,
+        };
+
+        newCategories.push(cat);
+      }
+    }
   }
 
   // Check if product exists
@@ -447,20 +435,20 @@ const createProductTypeTwo = async (data) => {
         // ✅ Category exists - check if active
         if (existingCategory.isActive === true) {
           // Already active - skip
-          duplicates.push({ size: newCat.size, color: newCat.color });
+          duplicates.push({ size: newCat.size, color: newCat.color, type: newCat.type[0], quality: newCat.quality[0] });
         } else {
           // ✅ Inactive - reactivate it
           existingCategory.isActive = true;
-          existingCategory.pkg = newCat.pkg; // Update pkg
-          existingCategory.articleCode = newCat.articleCode; // Update articleCode
-          
+          existingCategory.pkg = newCat.pkg;
+          existingCategory.articleCode = newCat.articleCode;
+
           // Update image if new one provided
           if (newCat.image && newCat.image.length > 0) {
             existingCategory.image = newCat.image;
           }
-          
-          reactivated.push({ size: newCat.size, color: newCat.color });
-          console.log(`🔄 Reactivated category: Size ${newCat.size}, Color ${newCat.color}`);
+
+          reactivated.push({ size: newCat.size, color: newCat.color, type: newCat.type[0], quality: newCat.quality[0] });
+          console.log(`🔄 Reactivated category: Size ${newCat.size}, Color ${newCat.color}, Type ${newCat.type[0]}, Quality ${newCat.quality[0]}`);
         }
       } else {
         // ✅ Category doesn't exist - add new
@@ -471,7 +459,7 @@ const createProductTypeTwo = async (data) => {
     // Handle results
     if (duplicates.length > 0) {
       const duplicateList = duplicates
-        .map((d) => `Size: ${d.size}, Color: ${d.color}`)
+        .map((d) => `Size: ${d.size}, Color: ${d.color}, Type: ${d.type}, Quality: ${d.quality}`)
         .join("; ");
       throw new Error(
         `Article ${article} already has active categories: ${duplicateList}`
@@ -480,11 +468,11 @@ const createProductTypeTwo = async (data) => {
 
     if (filteredCategories.length > 0) {
       product.category.push(...filteredCategories);
-      console.log(`➕ Added ${filteredCategories.length} new categories`);
+      console.log(`➕ Added ${filteredCategories.length} new normalized categories`);
     }
 
     if (reactivated.length === 0 && filteredCategories.length === 0) {
-      throw new Error(`No new categories to add for article "${article}". All categories are already active.`);
+      throw new Error(`No new categories to add for article "${article}". All type-quality combinations are already active.`);
     }
 
   } else {
@@ -494,7 +482,7 @@ const createProductTypeTwo = async (data) => {
       category: newCategories,
       isActive: true,
     });
-    console.log(`🆕 Created new product: ${article}`);
+    console.log(`🆕 Created new product: ${article} with ${newCategories.length} normalized categories`);
   }
 
   await product.save();
@@ -715,6 +703,26 @@ const updateProductByCategoryId = async (categoryId, updateData, file) => {
     category.pkg = cleanPkg;
     product.markModified(`category.${catIndex}.pkg`);
   }
+  if (updateData.type) {
+    try {
+      const parsedType = typeof updateData.type === 'string' ? JSON.parse(updateData.type) : updateData.type;
+      if (Array.isArray(parsedType) && parsedType.length > 0) {
+        category.type = parsedType;
+      }
+    } catch (e) {
+      // ignore parse error, keep existing value
+    }
+  }
+  if (updateData.quality) {
+    try {
+      const parsedQuality = typeof updateData.quality === 'string' ? JSON.parse(updateData.quality) : updateData.quality;
+      if (Array.isArray(parsedQuality) && parsedQuality.length > 0) {
+        category.quality = parsedQuality;
+      }
+    } catch (e) {
+      // ignore parse error, keep existing value
+    }
+  }
 
   // ✅ Handle file upload exactly like createProduct
   if (file) {
@@ -832,18 +840,21 @@ const parseCSV = (filePath) => {
 
           const categoryCodeClean = categoryCodeRaw ? categoryCodeRaw.replace(/\s+/g, '') : "";
 
-          // Create a category entry for each color
+          // ✅ NORMALIZATION: Create one category entry per color × type × quality combination
           colors.forEach((color) => {
-            const category = {
-              categoryCode: categoryCodeClean,
-              color,
-              size,
-              type: types,
-              quality: qualities,
-              pkg,
-            };
-
-            articlesMap[articleNumber].category.push(category);
+            for (const singleType of types) {
+              for (const singleQuality of qualities) {
+                const category = {
+                  categoryCode: categoryCodeClean,
+                  color,
+                  size,
+                  type: [singleType],       // exactly ONE type per category
+                  quality: [singleQuality], // exactly ONE quality per category
+                  pkg,
+                };
+                articlesMap[articleNumber].category.push(category);
+              }
+            }
           });
         } catch (err) {
           reject(err);
@@ -882,20 +893,17 @@ const uploadToDB = async (parsedData) => {
       for (const cat of categories) { 
         const { categoryCode, color, size } = cat; 
  
-        const typeCode = cat.type.includes("Soft") && cat.type.includes("Hard") ? "SH" : 
-          cat.type.includes("Soft") ? "S" : 
-            cat.type.includes("Hard") ? "H" : "X"; 
- 
-        const qualityCode = cat.quality.includes("A") && cat.quality.includes("B") ? "AB" : 
-          cat.quality.includes("A") ? "A" : 
-            cat.quality.includes("B") ? "B" : "X"; 
+        const singleType = Array.isArray(cat.type) ? cat.type[0] : cat.type;
+        const singleQuality = Array.isArray(cat.quality) ? cat.quality[0] : cat.quality;
+        const typeCode = singleType === "Soft" ? "S" : singleType === "Hard" ? "H" : singleType === "Common" ? "C" : "X";
+        const qualityCode = singleQuality === "A" ? "A" : singleQuality === "B" ? "B" : "X";
  
         const colorCode = color ? color.toUpperCase().replace(/\s+/g, '') : "X"; 
         const categoryCodeChar = categoryCode ? categoryCode.substring(0, 5).toUpperCase() : "XXXXX"; 
         const randomNum = Math.floor(1000 + Math.random() * 9000); 
  
         cat.SQU = `#${randomNum}${article}${categoryCodeChar}${colorCode}${size}${typeCode}${qualityCode}`; 
-        cat.isActive = true; // ✅ Set as active
+        cat.isActive = true; 
       } 
  
       product = await Product.create({ article, category: categories, isActive: true }); 
@@ -907,11 +915,13 @@ const uploadToDB = async (parsedData) => {
     for (const newCat of categories) { 
       const { categoryCode, color, size, pkg } = newCat; 
  
-      // ✅ Check if this exact category combination (size + color + categoryCode) already exists
+      // ✅ Check if this exact category combination (categoryCode + size + color + type + quality) already exists
       const existingCategory = product.category.find(c => 
         c.categoryCode === categoryCode && 
         c.color.toLowerCase() === color.toLowerCase() && 
-        c.size === size
+        c.size === size &&
+        (Array.isArray(c.type) ? c.type[0] : c.type) === (Array.isArray(newCat.type) ? newCat.type[0] : newCat.type) &&
+        (Array.isArray(c.quality) ? c.quality[0] : c.quality) === (Array.isArray(newCat.quality) ? newCat.quality[0] : newCat.quality)
       ); 
  
       if (existingCategory) {
@@ -939,20 +949,17 @@ const uploadToDB = async (parsedData) => {
       console.log(`➕ Adding new category for article ${article}: categoryCode=${categoryCode}, color=${color}, size=${size}`);
       
       // Generate SQU 
-      const typeCode = newCat.type.includes("Soft") && newCat.type.includes("Hard") ? "SH" : 
-        newCat.type.includes("Soft") ? "S" : 
-          newCat.type.includes("Hard") ? "H" : "X"; 
- 
-      const qualityCode = newCat.quality.includes("A") && newCat.quality.includes("B") ? "AB" : 
-        newCat.quality.includes("A") ? "A" : 
-          newCat.quality.includes("B") ? "B" : "X"; 
+      const singleType = Array.isArray(newCat.type) ? newCat.type[0] : newCat.type;
+      const singleQuality = Array.isArray(newCat.quality) ? newCat.quality[0] : newCat.quality;
+      const typeCode = singleType === "Soft" ? "S" : singleType === "Hard" ? "H" : singleType === "Common" ? "C" : "X";
+      const qualityCode = singleQuality === "A" ? "A" : singleQuality === "B" ? "B" : "X";
  
       const colorCode = newCat.color ? newCat.color.toUpperCase().replace(/\s+/g, '') : "X"; 
       const categoryCodeChar = newCat.categoryCode ? newCat.categoryCode.substring(0, 5).toUpperCase() : "XXXXX"; 
       const randomNum = Math.floor(1000 + Math.random() * 9000); 
  
       newCat.SQU = `#${randomNum}${article}${categoryCodeChar}${colorCode}${newCat.size}${typeCode}${qualityCode}`; 
-      newCat.isActive = true; // ✅ Set as active
+      newCat.isActive = true; 
  
       product.category.push(newCat); 
     } 

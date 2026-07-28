@@ -250,13 +250,16 @@ exports.createProduct = async (data) => {
         }
       }
 
-      // Instead of throw → return structured response
-      if (errors.length > 0) {
-        return {
-          success: false,
-          message: `Please Check Product Detail: ${errors.join(" And ")}`
-        };
-      }
+      // ✅ Always return here when matchedCategory is undefined — 
+      // either with specific field errors or a generic combination error
+      const errorMessage = errors.length > 0
+        ? `Please Check Product Detail: ${errors.join(" And ")}`
+        : `No category found matching the combination: size='${data.size}', color='${data.color}', type='${selectedType}', quality='${selectedQuality}'. Please verify your selection.`;
+
+      return {
+        success: false,
+        message: errorMessage
+      };
     }
 
     // Step 6: Ensure production number is unique
@@ -288,9 +291,10 @@ exports.createProduct = async (data) => {
     const productionNo = await getNextProductionNumber();
     if (!productionNo) throw new Error("Failed to generate a valid production number.");
 
-      const selectedImage = Array.isArray(matchedCategory.image) && matchedCategory.image.length > 0
-    ? matchedCategory.image[0]   // Pick first image (or change logic)
-    : null;
+    // ✅ Safe image access — matchedCategory is guaranteed to be defined here
+    const selectedImage = matchedCategory && Array.isArray(matchedCategory.image) && matchedCategory.image.length > 0
+      ? matchedCategory.image[0]
+      : null;
 
     // 🏭 Step 8: Create Production record
     const productionData = {
