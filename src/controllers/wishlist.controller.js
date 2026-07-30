@@ -1,5 +1,5 @@
 const { WishlistService } = require('../services'); // your service function
-const { Customer, Product, Wishlist, Schemes } = require("../models");
+const { Customer, Product, Wishlist, Schemes, WishlistHistory } = require("../models");
 const mongoose = require("mongoose");
 const { enrichOrdersWithProductDetails } = require("../services/salesOrder.service");
 
@@ -40,10 +40,23 @@ exports.addWishlist = async (req, res) => {
 
 exports.getAllWishlist = async (req, res) => {
   try {
-    const { page, limit, search } = req.query;
+    const { page, limit, search, customer, startDate, endDate } = req.query;
+
+    // Build optional filters (customer + createdAt date range)
+    const filter = {};
+    if (customer) filter.customer = customer;
+    if (startDate || endDate) {
+      filter.createdAt = {};
+      if (startDate) filter.createdAt.$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999); // include the whole end day
+        filter.createdAt.$lte = end;
+      }
+    }
 
     // Call service function
-    const result = await WishlistService.getWishlist({}, page, limit, search);
+    const result = await WishlistService.getWishlist(filter, page, limit, search);
 
     return res.status(200).json({
       success: true,
@@ -78,44 +91,87 @@ exports.getWishlistBySalesperson = async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 10;
     const skip = (page - 1) * limit;
 
-    // 🔍 Base query (SalesPerson only)
-    const query = {
-      createdBy: salesPersonId,
-      isActive: true
+    // 🔎 Shared filters (customer / date / search) applied to BOTH the active
+    // Wishlist collection and the archived WishlistHistory collection.
+    const { startDate, endDate } = req.query;
+    const buildDateRange = () => {
+      const range = {};
+      if (startDate) range.$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999); // include the whole end day
+        range.$lte = end;
+      }
+      return range;
     };
 
-    // 🔎 Search handling (same pattern as customer)
-    if (req.query.search && req.query.search.trim() !== "") {
-      const search = req.query.search.trim();
-      const regex = new RegExp(search, "i");
+    const search =
+      req.query.search && req.query.search.trim() !== ""
+        ? req.query.search.trim()
+        : null;
+    const searchOr = search ? [{ description: new RegExp(search, "i") }] : null;
 
-      query.$or = [
-        { description: regex },
-      ];
-    }
+    // Active (pending) wishlists
+    const activeQuery = { createdBy: salesPersonId, isActive: true };
+    if (req.query.customer) activeQuery.customer = req.query.customer;
+    if (startDate || endDate) activeQuery.createdAt = buildDateRange();
+    if (searchOr) activeQuery.$or = searchOr;
 
-    // 📦 Fetch wishlist data
-    const [wishlists, total] = await Promise.all([
-      Wishlist.find(query)
+    // Archived wishlists (accepted / rejected / timeout). Date filter applies to
+    // when the action happened (actionAt).
+    const historyQuery = { createdBy: salesPersonId };
+    if (req.query.customer) historyQuery.customer = req.query.customer;
+    if (startDate || endDate) historyQuery.actionAt = buildDateRange();
+    if (searchOr) historyQuery.$or = searchOr;
+
+    const [activeDocs, historyDocs] = await Promise.all([
+      Wishlist.find(activeQuery)
         .populate("customer", "name email phone location")
         .populate("createdBy", "name email phone location")
         .populate("scheme", "name")
-        .sort({ updatedAt: -1 })
-        .skip(skip)
-        .limit(limit)
         .lean(),
-      Wishlist.countDocuments(query)
+      WishlistHistory.find(historyQuery)
+        .populate("customer", "name email phone location")
+        .populate("createdBy", "name email phone location")
+        .populate("scheme", "name")
+        .lean(),
     ]);
 
-    await enrichOrdersWithProductDetails(wishlists);
+    // Tag each set so the frontend can dim history rows and hide their actions.
+    const activeTagged = activeDocs.map((d) => ({
+      ...d,
+      isHistory: false,
+      wishAction: null,
+      _sortDate: d.updatedAt || d.createdAt,
+    }));
+    const historyTagged = historyDocs.map((d) => ({
+      ...d,
+      isHistory: true,
+      // wishAction ("Accepted" | "Rejected" | "Timeout") already on the doc.
+      _sortDate: d.actionAt || d.updatedAt || d.createdAt,
+    }));
+
+    // Merge newest-first, then paginate the combined list in memory.
+    const combined = [...activeTagged, ...historyTagged].sort(
+      (a, b) => new Date(b._sortDate) - new Date(a._sortDate)
+    );
+
+    const totalRecords = combined.length;
+    const totalPages = Math.ceil(totalRecords / limit) || 1;
+    const pageSlice = combined.slice(skip, skip + limit);
+
+    await enrichOrdersWithProductDetails(pageSlice);
+    pageSlice.forEach((d) => {
+      delete d._sortDate;
+    });
 
     return res.status(200).json({
       success: true,
       page,
       limit,
-      totalPages: Math.ceil(total / limit),
-      totalRecords: total,
-      wishlists
+      totalPages,
+      totalRecords,
+      wishlists: pageSlice,
     });
 
   } catch (error) {
@@ -196,12 +252,12 @@ exports.completeWishlist = async (req, res) => {
 exports.softDeleteWishlistById = async (req, res) => {
   try {
     const { id } = req.params;
-    const deletedWishlist = await WishlistService.softDeleteWishlistById(id);
+    const rejectedWishlist = await WishlistService.softDeleteWishlistById(id);
 
     return res.status(200).json({
       success: true,
-      message: "Wishlist deleted successfully",
-      data: deletedWishlist
+      message: "Wishlist rejected successfully",
+      data: rejectedWishlist
     });
 
   } catch (error) {

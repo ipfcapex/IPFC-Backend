@@ -8,9 +8,12 @@ exports.getAggregatedStocks = async (req, res) => {
   try {
     const page = parseInt(req.query.page, 10) || 1;
     const limit = parseInt(req.query.limit, 10) || 10;
-    const search = req.query.search?.trim() || ""; 
+    const search = req.query.search?.trim() || "";
+    // Optional: when the order is created from a wishlist, exclude that
+    // wishlist's own reserved qty from the availability calculation.
+    const excludeWishlistId = req.query.excludeWishlistId?.trim() || null;
 
-    const aggregatedStock = await orderService.getAggregatedStock(page, limit, search);
+    const aggregatedStock = await orderService.getAggregatedStock(page, limit, search, excludeWishlistId);
 
     return res.status(200).json({
       success: true,

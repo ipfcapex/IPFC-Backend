@@ -1,4 +1,4 @@
-const { Customer, Product, Wishlist, Schemes } = require("../models");
+const { Customer, Product, Wishlist, Schemes, WishlistHistory } = require("../models");
 const mongoose = require("mongoose");
 const { enrichOrdersWithProductDetails } = require("./salesOrder.service");
 
@@ -123,42 +123,69 @@ exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "") => 
   const limitNum = parseInt(limit, 10) || 10;
   const skip = (pageNum - 1) * limitNum;
 
-  // Base query
-  const query = { isActive: true, ...filter };
+  const searchOr =
+    search && search.trim() !== ""
+      ? [{ description: { $regex: new RegExp(search.trim(), "i") } }]
+      : null;
 
-  // Add search if provided
-  if (search && search.trim() !== "") {
-    const regex = new RegExp(search.trim(), "i");
-    query.$or = [
-      { description: { $regex: regex } },
-      // { 'customer.name': { $regex: regex } }
-    ];
-  }
+  // Active (pending) wishlists.
+  const activeQuery = { isActive: true, ...filter };
+  if (searchOr) activeQuery.$or = searchOr;
 
-  // Fetch wishlists and total count in parallel
-  const [wishlists, totalItems] = await Promise.all([
-    Wishlist.find(query)
+  // Archived wishlists (accepted / rejected / timeout). Reuse the same customer
+  // filter; the incoming date filter is on createdAt, so remap it to actionAt
+  // (when the wishlist was archived).
+  const historyQuery = {};
+  if (filter.customer) historyQuery.customer = filter.customer;
+  if (filter.createdAt) historyQuery.actionAt = filter.createdAt;
+  if (searchOr) historyQuery.$or = searchOr;
+
+  const [activeDocs, historyDocs] = await Promise.all([
+    Wishlist.find(activeQuery)
       .populate("customer", "name email phone location")
       .populate("createdBy", "name email")
       .populate("scheme", "name")
-      .sort({ updatedAt: -1 })
-      .skip(skip)
-      .limit(limitNum)
       .lean(),
-    Wishlist.countDocuments(query)
+    WishlistHistory.find(historyQuery)
+      .populate("customer", "name email phone location")
+      .populate("createdBy", "name email")
+      .populate("scheme", "name")
+      .lean(),
   ]);
 
-  await enrichOrdersWithProductDetails(wishlists);
+  // Tag so the UI can dim history rows and hide their actions.
+  const activeTagged = activeDocs.map((d) => ({
+    ...d,
+    isHistory: false,
+    wishAction: null,
+    _sortDate: d.updatedAt || d.createdAt,
+  }));
+  const historyTagged = historyDocs.map((d) => ({
+    ...d,
+    isHistory: true,
+    _sortDate: d.actionAt || d.updatedAt || d.createdAt,
+  }));
 
-  const totalPages = Math.ceil(totalItems / limitNum);
+  const combined = [...activeTagged, ...historyTagged].sort(
+    (a, b) => new Date(b._sortDate) - new Date(a._sortDate)
+  );
+
+  const totalItems = combined.length;
+  const totalPages = Math.ceil(totalItems / limitNum) || 1;
+  const pageSlice = combined.slice(skip, skip + limitNum);
+
+  await enrichOrdersWithProductDetails(pageSlice);
+  pageSlice.forEach((d) => {
+    delete d._sortDate;
+  });
 
   return {
-    wishlists,
+    wishlists: pageSlice,
     pagination: {
       currentPage: pageNum,
       totalPages,
-      totalItems
-    }
+      totalItems,
+    },
   };
 };
 
@@ -210,11 +237,22 @@ exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "") => 
 // };
 
 exports.getWishlistById = async (id) => {
-  const wishlist = await Wishlist.findById(id)
+  let wishlist = await Wishlist.findById(id)
     .populate("customer", "name email phone location")
     .populate("createdBy", "name email")
     .populate("scheme", "name")
     .lean();
+
+  // Fall back to the archive so the View action works for accepted / rejected /
+  // timed-out wishlists too. Tag it so the UI can show it as historic.
+  if (!wishlist) {
+    wishlist = await WishlistHistory.findById(id)
+      .populate("customer", "name email phone location")
+      .populate("createdBy", "name email")
+      .populate("scheme", "name")
+      .lean();
+    if (wishlist) wishlist.isHistory = true;
+  }
 
   if (!wishlist) throw new Error("Wishlist not found");
   await enrichOrdersWithProductDetails([wishlist]);
@@ -311,39 +349,57 @@ exports.updateWishlistById = async (id, updateData) => {
   return populatedWishlist;
 };
 
+// Copy a wishlist document into WishlistHistory with the given action, then
+// remove it from the active Wishlist collection. Returns the created history
+// record. `action` is one of "Accepted" | "Rejected" | "Timeout".
+exports.archiveWishlist = async (wishlist, action) => {
+  const history = await WishlistHistory.create({
+    originalWishlistId: wishlist._id,
+    createdBy: wishlist.createdBy,
+    customer: wishlist.customer,
+    Location: wishlist.Location,
+    WishList: wishlist.WishList,
+    description: wishlist.description,
+    scheme: wishlist.scheme,
+    wishlistStockTime: wishlist.wishlistStockTime,
+    wishAction: action,
+    actionAt: new Date(),
+    originalCreatedAt: wishlist.createdAt,
+    originalUpdatedAt: wishlist.updatedAt,
+  });
+
+  await Wishlist.deleteOne({ _id: wishlist._id });
+
+  return history;
+};
+
+// Accept (Approve) a wishlist: archive the whole record to WishlistHistory as
+// "Accepted" and remove it from the active wishlist collection.
 exports.findandmarkdone = async (id) => {
   if (!id) throw new Error("Wishlist ID is required");
 
   const wishlist = await Wishlist.findById(id);
-  
+
   // Check if it exists at all
   if (!wishlist) {
     throw new Error("Wishlist not found or already deleted");
   }
 
-  // Check if it's ready to be removed
-  if (wishlist.wishlistStockTime !== null) {
-    const deletedWishlist = await Wishlist.findByIdAndDelete(id);
-    
-    // Safety check: if someone else deleted it in the last millisecond
-    if (!deletedWishlist) {
-      throw new Error("Wishlist not found or already deleted");
-    }
-    
-    return deletedWishlist;
-  } else {
+  // Can only be accepted once stock has been applied
+  if (wishlist.wishlistStockTime === null) {
     throw new Error("Wishlist is not ready: stock time has not been applied");
   }
+
+  return await exports.archiveWishlist(wishlist, "Accepted");
 };
 
+// Reject a wishlist: archive the whole record to WishlistHistory as "Rejected"
+// and remove it from the active wishlist collection.
 exports.softDeleteWishlistById = async (id) => {
   if (!id) throw new Error("Wishlist ID is required");
 
-  const wishlist = await Wishlist.findByIdAndDelete(id);
+  const wishlist = await Wishlist.findById(id);
   if (!wishlist) throw new Error("Wishlist not found");
 
-  // wishlist.isActive = false;
-  // const savedWishlist = await wishlist.save();
-
-  // return savedWishlist;
+  return await exports.archiveWishlist(wishlist, "Rejected");
 };

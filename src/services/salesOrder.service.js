@@ -79,7 +79,7 @@ async function enrichOrdersWithProductDetails(orders) {
 }
 exports.enrichOrdersWithProductDetails = enrichOrdersWithProductDetails;
 
-exports.getAggregatedStock = async (page = 1, limit = 10, search = "") => {
+exports.getAggregatedStock = async (page = 1, limit = 10, search = "", excludeWishlistId = null) => {
   const skip = (page - 1) * limit;
 
   /* ===============================
@@ -210,7 +210,17 @@ const wishlistAgg = await Wishlist.aggregate([
   {
     $match: {
       isActive: true,
-      wishlistStockTime: { $ne: null} // only valid wishlist
+      // The Wishlist collection only holds pending wishlists now (accepted /
+      // rejected / timed-out ones are archived to WishlistHistory and removed),
+      // so every remaining wishlist with stock applied is a live reservation.
+      wishlistStockTime: { $ne: null}, // only valid wishlist
+      // When creating an order FROM a wishlist, that wishlist's own reserved
+      // qty must NOT be counted against availability (the salesperson is
+      // converting it into an order). For a normal order excludeWishlistId is
+      // null and every pending wishlist keeps reserving.
+      ...(excludeWishlistId
+        ? { _id: { $ne: new mongoose.Types.ObjectId(excludeWishlistId) } }
+        : {})
     }
   },
   { $unwind: "$WishList" },
@@ -937,18 +947,18 @@ exports.deleteWishlist = async (id) => {
 
       return {
         success: true,
-        message: "SellOrder wishlist cleared successfully",
+        message: "Wishlist removed successfully",
         clearedData,
       };
     }
 
-    return { success: false, message: "SellOrder wishlist is already empty" };
+    return { success: false, message: "This wishlist is already empty" };
   }
 
   // Not found in SellOrder → check Cart
   const cartDoc = await Cart.findById(id);
   if (!cartDoc) {
-    return { success: false, message: "Document not found in SellOrder or Cart" };
+    return { success: false, message: "Wishlist not found" };
   }
 
   const itemsEmpty = !cartDoc.items || cartDoc.items.length === 0;
@@ -959,7 +969,7 @@ exports.deleteWishlist = async (id) => {
     const deletedCart = await Cart.findByIdAndDelete(id);
     return {
       success: true,
-      message: "Cart entry deleted successfully (items were empty)",
+      message: "Wishlist removed successfully",
       deletedData: deletedCart,
     };
   } else if (!itemsEmpty && wishlistExists) {
@@ -970,12 +980,12 @@ exports.deleteWishlist = async (id) => {
 
     return {
       success: true,
-      message: "Wishlist cleared from Cart (items not empty)",
+      message: "Wishlist removed successfully",
       clearedData,
     };
   }
 
-  return { success: false, message: "Cart not deleted (items empty or wishlist empty)" };
+  return { success: false, message: "This wishlist is already empty" };
 };
 
 //move wishlist to cart
