@@ -8,15 +8,15 @@ const { enrichOrdersWithProductDetails } = require("../services/salesOrder.servi
 // ------------------------
 exports.addWishlist = async (req, res) => {
   try {
-    const { 
-      // customer,
-      // location, 
+    const {
+      customer,
+      location,
       items, schemesId, createdBy, description } = req.body;
 
     // Call the service function
     const wishlistOrder = await WishlistService.AddToWishlist({
-      // customer,
-      // location,
+      customer,
+      location,
       items,
       schemesId,
       createdBy,

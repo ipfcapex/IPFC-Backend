@@ -7,7 +7,7 @@ const categorySchema = new mongoose.Schema({
   size: { type: String, required: true },
   type: {
     type: [String],
-    enum: ["Soft", "Hard"],
+    enum: ["Soft", "Hard", "Common"],
     required: true
   },
   quality: {

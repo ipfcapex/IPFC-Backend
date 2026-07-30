@@ -458,11 +458,21 @@ exports.AddOrdertoCart = async ({ customer, location, items, schemesId, createdB
     //   );
     // }
 
+// Match type/quality too: a single color+size can have multiple sub-documents
+// differing only by type/quality (Soft/Hard/Common x A/B) that share the same
+// categoryCode. Without them we would always resolve the first variant, which
+// stores the wrong categoryId and mis-keys the stock lookup below.
 const productRecord = await Product.findOne({
   article: item.article,
-  "category.categoryCode": item.categoryCode,
-  "category.color": { $regex: new RegExp(`^${item.color}$`, "i") }, // case-insensitive
-  "category.size": { $regex: new RegExp(`^${item.size}$`, "i") },
+  category: {
+    $elemMatch: {
+      categoryCode: item.categoryCode,
+      color: { $regex: new RegExp(`^${item.color}$`, "i") }, // case-insensitive
+      size: { $regex: new RegExp(`^${item.size}$`, "i") },
+      ...(item.type && { type: { $regex: new RegExp(`^${item.type}$`, "i") } }),
+      ...(item.quality && { quality: { $regex: new RegExp(`^${item.quality}$`, "i") } })
+    }
+  }
 });
 
 let imageUrl = null;
@@ -473,7 +483,11 @@ if (productRecord && productRecord.category?.length > 0) {
   const matchedCategory = productRecord.category.find(cat =>
     cat.categoryCode === item.categoryCode &&
     cat.color.toLowerCase() === item.color.toLowerCase() &&
-    cat.size.toLowerCase() === item.size.toLowerCase()
+    cat.size.toLowerCase() === item.size.toLowerCase() &&
+    (!item.type ||
+      (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase())) &&
+    (!item.quality ||
+      (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase()))
   );
 
   if (matchedCategory) {
@@ -1112,7 +1126,9 @@ exports.reverseDelivery = async (id, payload) => {
     (cat) =>
       String(cat.categoryCode) === String(categoryCode) &&
       String(cat.color).toLowerCase() === String(color).toLowerCase() &&
-      String(cat.size).toLowerCase() === String(size).toLowerCase()
+      String(cat.size).toLowerCase() === String(size).toLowerCase() &&
+      (cat.type || []).some(t => String(t).toLowerCase() === String(type).toLowerCase()) &&
+      (cat.quality || []).some(q => String(q).toLowerCase() === String(quality).toLowerCase())
   );
   if (!matchedCategory) {
     throw new Error("Matching category combination not found in product catalog.");

@@ -13,16 +13,16 @@ const { enrichOrdersWithProductDetails } = require("./salesOrder.service");
  * @returns {Object} - Populated wishlist document
  */
 exports.AddToWishlist = async ({
-  // customer,
-  // location,
+  customer,
+  location,
   items,
   schemesId,
   createdBy,
   description
 }) => {
-  // // 1️⃣ Validate customer
-  // const existingCustomer = await Customer.findOne({ name: customer });
-  // if (!existingCustomer) throw new Error("Customer not found");
+  // 1️⃣ Validate customer
+  const existingCustomer = await Customer.findOne({ name: customer });
+  if (!existingCustomer) throw new Error("Customer not found");
 
   // 2️⃣ Validate scheme (optional)
   let scheme = null;
@@ -42,21 +42,26 @@ exports.AddToWishlist = async ({
       );
     }
 
-    // 🔍 STRICT product + category match
+    // 🔍 STRICT product + category match.
+    // type/quality must be part of the match: a single color+size can have
+    // multiple sub-documents differing only by type/quality (e.g. Soft/Hard/
+    // Common × A/B), all sharing the same categoryCode. Without them we would
+    // always pick the first variant regardless of what the user selected.
     const productRecord = await Product.findOne({
       article: item.article,
       category: {
         $elemMatch: {
           categoryCode: item.categoryCode,
           color: { $regex: new RegExp(`^${item.color}$`, "i") },
-          size: { $regex: new RegExp(`^${item.size}$`, "i") }
+          size: { $regex: new RegExp(`^${item.size}$`, "i") },
+          ...(item.type && { type: { $regex: new RegExp(`^${item.type}$`, "i") } }),
+          ...(item.quality && { quality: { $regex: new RegExp(`^${item.quality}$`, "i") } })
         }
       }
     });
-    console.log("Product Record:", productRecord);
     if (!productRecord) {
       throw new Error(
-        `Product not found for article ${item.article} with categoryCode ${item.categoryCode}, color ${item.color}, size ${item.size}`
+        `Product not found for article ${item.article} with categoryCode ${item.categoryCode}, color ${item.color}, size ${item.size}, type ${item.type}, quality ${item.quality}`
       );
     }
 
@@ -67,7 +72,11 @@ exports.AddToWishlist = async ({
       const matchedCategory = productRecord.category.find(cat =>
         cat.categoryCode === item.categoryCode &&
         cat.color?.toLowerCase() === item.color?.toLowerCase() &&
-        cat.size?.toLowerCase() === item.size?.toLowerCase()
+        cat.size?.toLowerCase() === item.size?.toLowerCase() &&
+        (!item.type ||
+          (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase())) &&
+        (!item.quality ||
+          (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase()))
       );
 
       if (matchedCategory) {
@@ -90,8 +99,8 @@ exports.AddToWishlist = async ({
 
   // 4️⃣ Create Wishlist document
   const wishlistData = {
-    // customer: existingCustomer._id,
-    // Location: location,
+    customer: existingCustomer._id,
+    Location: location,
     WishList: wishlistItems,
     createdBy,
     description: description || "",
@@ -104,7 +113,7 @@ exports.AddToWishlist = async ({
 
   // 5️⃣ Populate & return
   return await Wishlist.findById(wishlist._id)
-    //  .populate("customer") 
+    .populate("customer")
     .populate("createdBy")
     .populate("scheme");
 };
@@ -246,12 +255,20 @@ exports.updateWishlistById = async (id, updateData) => {
         throw new Error(`Quantity for article ${item.article} must be at least 1`);
       }
 
-      // Fetch product for image
+      // Fetch product for image. Match type/quality too so we resolve the exact
+      // sub-document (a color+size can have multiple type/quality variants that
+      // share the same categoryCode).
       const productRecord = await Product.findOne({
         article: item.article,
-        "category.categoryCode": item.categoryCode,
-        "category.color": { $regex: new RegExp(`^${item.color}$`, "i") },
-        "category.size": { $regex: new RegExp(`^${item.size}$`, "i") },
+        category: {
+          $elemMatch: {
+            categoryCode: item.categoryCode,
+            color: { $regex: new RegExp(`^${item.color}$`, "i") },
+            size: { $regex: new RegExp(`^${item.size}$`, "i") },
+            ...(item.type && { type: { $regex: new RegExp(`^${item.type}$`, "i") } }),
+            ...(item.quality && { quality: { $regex: new RegExp(`^${item.quality}$`, "i") } })
+          }
+        }
       });
 
       let imageUrl = null;
@@ -260,7 +277,11 @@ exports.updateWishlistById = async (id, updateData) => {
         const matchedCategory = productRecord.category.find(cat =>
           cat.categoryCode === item.categoryCode &&
           cat.color.toLowerCase() === item.color.toLowerCase() &&
-          cat.size.toLowerCase() === item.size.toLowerCase()
+          cat.size.toLowerCase() === item.size.toLowerCase() &&
+          (!item.type ||
+            (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase())) &&
+          (!item.quality ||
+            (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase()))
         );
         if (matchedCategory) {
           matchedCategoryId = matchedCategory._id;

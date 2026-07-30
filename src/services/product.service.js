@@ -770,7 +770,16 @@ const parseCSV = (filePath) => {
 
     fs.createReadStream(filePath)
       .on("error", reject)
-      .pipe(csv())
+      // Strip a leading UTF-8 BOM (added by Excel "CSV UTF-8") and trim stray
+      // whitespace from headers, otherwise "article" arrives as "﻿article"
+      // and every row is dropped -> "Uploaded CSV is empty or invalid".
+      .pipe(csv({
+        mapHeaders: ({ header }) => {
+          // charCode 0xFEFF is the BOM; slicing it avoids a fragile literal BOM in source.
+          const clean = header && header.charCodeAt(0) === 0xFEFF ? header.slice(1) : header;
+          return clean ? clean.trim() : clean;
+        },
+      }))
       .on("data", (row) => {
         try {
           const categoryCodeRaw = row.categoryCode || row.category;
