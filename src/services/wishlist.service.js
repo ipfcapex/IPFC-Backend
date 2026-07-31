@@ -1,6 +1,7 @@
-const { Customer, Product, Wishlist, Schemes, WishlistHistory } = require("../models");
+const { Customer, Product, Wishlist, Schemes, WishlistHistory, SellOrder, Cart } = require("../models");
 const mongoose = require("mongoose");
 const { enrichOrdersWithProductDetails } = require("./salesOrder.service");
+const { sendNotification } = require("./notificationService");
 
 /**
  * Add items to wishlist
@@ -47,6 +48,17 @@ exports.AddToWishlist = async ({
     // multiple sub-documents differing only by type/quality (e.g. Soft/Hard/
     // Common × A/B), all sharing the same categoryCode. Without them we would
     // always pick the first variant regardless of what the user selected.
+    // STRICT variant match: article + categoryCode + color + size + type +
+    // quality must ALL be present and matched, otherwise a color+size+categoryCode
+    // with several type/quality sub-documents resolves the FIRST one and stores
+    // the wrong categoryId (which then breaks the order/production/dispatch match).
+    if (!item.categoryCode || !item.color || !item.size || !item.type || !item.quality) {
+      throw new Error(
+        `Incomplete product details for article ${item.article || "?"}: ` +
+          `categoryCode, color, size, type and quality are all required.`
+      );
+    }
+
     const productRecord = await Product.findOne({
       article: item.article,
       category: {
@@ -54,8 +66,8 @@ exports.AddToWishlist = async ({
           categoryCode: item.categoryCode,
           color: { $regex: new RegExp(`^${item.color}$`, "i") },
           size: { $regex: new RegExp(`^${item.size}$`, "i") },
-          ...(item.type && { type: { $regex: new RegExp(`^${item.type}$`, "i") } }),
-          ...(item.quality && { quality: { $regex: new RegExp(`^${item.quality}$`, "i") } })
+          type: { $regex: new RegExp(`^${item.type}$`, "i") },
+          quality: { $regex: new RegExp(`^${item.quality}$`, "i") }
         }
       }
     });
@@ -73,10 +85,8 @@ exports.AddToWishlist = async ({
         cat.categoryCode === item.categoryCode &&
         cat.color?.toLowerCase() === item.color?.toLowerCase() &&
         cat.size?.toLowerCase() === item.size?.toLowerCase() &&
-        (!item.type ||
-          (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase())) &&
-        (!item.quality ||
-          (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase()))
+        (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase()) &&
+        (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase())
       );
 
       if (matchedCategory) {
@@ -86,6 +96,15 @@ exports.AddToWishlist = async ({
           image = [matchedCategory.image[0]];
         }
       }
+    }
+
+    // Never store an unresolved / wrong variant on the wishlist.
+    if (!matchedCategoryId) {
+      throw new Error(
+        `No matching product variant for article ${item.article}, ` +
+          `categoryCode ${item.categoryCode}, color ${item.color}, size ${item.size}, ` +
+          `type ${item.type}, quality ${item.quality}.`
+      );
     }
 
     // ✅ Push clean wishlist item (ids only)
@@ -293,9 +312,17 @@ exports.updateWishlistById = async (id, updateData) => {
         throw new Error(`Quantity for article ${item.article} must be at least 1`);
       }
 
-      // Fetch product for image. Match type/quality too so we resolve the exact
-      // sub-document (a color+size can have multiple type/quality variants that
-      // share the same categoryCode).
+      // STRICT variant match: article + categoryCode + color + size + type +
+      // quality must ALL be present and matched, otherwise a color+size+
+      // categoryCode with several type/quality sub-documents resolves the FIRST
+      // one and stores the wrong categoryId (breaking order/production/dispatch).
+      if (!item.categoryCode || !item.color || !item.size || !item.type || !item.quality) {
+        throw new Error(
+          `Incomplete product details for article ${item.article || "?"}: ` +
+            `categoryCode, color, size, type and quality are all required.`
+        );
+      }
+
       const productRecord = await Product.findOne({
         article: item.article,
         category: {
@@ -303,8 +330,8 @@ exports.updateWishlistById = async (id, updateData) => {
             categoryCode: item.categoryCode,
             color: { $regex: new RegExp(`^${item.color}$`, "i") },
             size: { $regex: new RegExp(`^${item.size}$`, "i") },
-            ...(item.type && { type: { $regex: new RegExp(`^${item.type}$`, "i") } }),
-            ...(item.quality && { quality: { $regex: new RegExp(`^${item.quality}$`, "i") } })
+            type: { $regex: new RegExp(`^${item.type}$`, "i") },
+            quality: { $regex: new RegExp(`^${item.quality}$`, "i") }
           }
         }
       });
@@ -314,12 +341,10 @@ exports.updateWishlistById = async (id, updateData) => {
       if (productRecord && productRecord.category?.length > 0) {
         const matchedCategory = productRecord.category.find(cat =>
           cat.categoryCode === item.categoryCode &&
-          cat.color.toLowerCase() === item.color.toLowerCase() &&
-          cat.size.toLowerCase() === item.size.toLowerCase() &&
-          (!item.type ||
-            (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase())) &&
-          (!item.quality ||
-            (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase()))
+          cat.color?.toLowerCase() === item.color.toLowerCase() &&
+          cat.size?.toLowerCase() === item.size.toLowerCase() &&
+          (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase()) &&
+          (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase())
         );
         if (matchedCategory) {
           matchedCategoryId = matchedCategory._id;
@@ -327,8 +352,17 @@ exports.updateWishlistById = async (id, updateData) => {
         }
       }
 
+      // Never store an unresolved / wrong variant on the wishlist.
+      if (!matchedCategoryId) {
+        throw new Error(
+          `No matching product variant for article ${item.article}, ` +
+            `categoryCode ${item.categoryCode}, color ${item.color}, size ${item.size}, ` +
+            `type ${item.type}, quality ${item.quality}.`
+        );
+      }
+
       updatedItems.push({
-        productId: productRecord?._id,
+        productId: productRecord._id,
         categoryId: matchedCategoryId,
         quantity: item.quantity,
         image: imageUrl ? [imageUrl] : [],
@@ -373,9 +407,11 @@ exports.archiveWishlist = async (wishlist, action) => {
   return history;
 };
 
-// Accept (Approve) a wishlist: archive the whole record to WishlistHistory as
-// "Accepted" and remove it from the active wishlist collection.
-exports.findandmarkdone = async (id) => {
+// Accept (Approve) a wishlist: instead of just archiving/redirecting, directly
+// create a SellOrder from the wishlist's customer + product details, then
+// archive the wishlist to WishlistHistory as "Accepted" and remove it from the
+// active wishlist collection. Returns { order, history }.
+exports.findandmarkdone = async (id, schemesId) => {
   if (!id) throw new Error("Wishlist ID is required");
 
   const wishlist = await Wishlist.findById(id);
@@ -390,7 +426,67 @@ exports.findandmarkdone = async (id) => {
     throw new Error("Wishlist is not ready: stock time has not been applied");
   }
 
-  return await exports.archiveWishlist(wishlist, "Accepted");
+  // Must have items to turn into an order
+  if (!wishlist.WishList || wishlist.WishList.length === 0) {
+    throw new Error("Wishlist has no items to create an order");
+  }
+
+  // Scheme to attach to the order: a scheme chosen at approval time (from the
+  // confirm modal) overrides whatever was on the wishlist. Falls back to the
+  // wishlist's own scheme when none is passed.
+  let orderScheme = wishlist.scheme;
+  if (schemesId) {
+    const scheme = await Schemes.findById(schemesId);
+    if (!scheme) throw new Error("Scheme not found");
+    orderScheme = scheme._id;
+  }
+
+  // 1️⃣ APPROVE FIRST: archive the wishlist as Accepted and remove it from the
+  // active list. The `wishlist` document is still held in memory, so its
+  // customer/product details remain available for the order created below.
+  const history = await exports.archiveWishlist(wishlist, "Accepted");
+
+  // 2️⃣ THEN PLACE ORDER. Generate the next sales order number the same way as
+  // Cart/checkout: pick the higher of the last Cart and last SellOrder number,
+  // then increment.
+  const lastCartOrder = await Cart.findOne().sort({ createdAt: -1 });
+  const lastSellOrder = await SellOrder.findOne().sort({ createdAt: -1 });
+  const nextNo = Math.max(
+    lastCartOrder ? parseInt(lastCartOrder.salesOrderNo.split("/")[1]) : 0,
+    lastSellOrder ? parseInt(lastSellOrder.salesOrderNo.split("/")[1]) : 0
+  ) + 1;
+  const salesOrderNo = `SO/${nextNo}`;
+
+  // Map wishlist items to order items (ids only; article/category details are
+  // resolved from productId/categoryId when the order is read).
+  const orderItems = wishlist.WishList.map((it) => ({
+    productId: it.productId,
+    categoryId: it.categoryId,
+    quantity: it.quantity,
+    image: it.image || [],
+  }));
+
+  // Create the SellOrder directly from the wishlist's customer + products.
+  const order = await SellOrder.create({
+    salesOrderNo,
+    customer: wishlist.customer,
+    Location: wishlist.Location,
+    items: orderItems,
+    scheme: orderScheme,
+    createdBy: wishlist.createdBy,
+    isActive: true,
+  });
+
+  await order.populate("createdBy", "name");
+
+  // 3️⃣ Notify (same channel as a salesperson-generated order) for review.
+  const Notification = {
+    message: `Order ${order.salesOrderNo} created from approved wishlist by ${order.createdBy?.name || "Sales Person"}. Please review.`,
+    data: order,
+  };
+  sendNotification("SalesPersonGenearated", Notification);
+
+  return { order, history };
 };
 
 // Reject a wishlist: archive the whole record to WishlistHistory as "Rejected"

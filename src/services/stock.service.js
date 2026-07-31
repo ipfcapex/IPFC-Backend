@@ -235,6 +235,7 @@ exports.createStockByQr = async (qrImage) => {
         categoryId: production.categoryId,
         quantity,
         qrData: qrImage,
+        qrId: qrImage,
         productionNo,
       });
 
@@ -252,6 +253,7 @@ exports.createStockByQr = async (qrImage) => {
             categoryId: production.categoryId,
             quantity,
             qrData: qrImage,
+            qrId: qrImage,
             productionNo,
           },
         ],
@@ -484,24 +486,64 @@ exports.scanAndDispatch = async (req) => {
     w.toString()
   );
 
-  // ✅ Populate factory & warehouse to get their names
-  const stock = await Stock.findOne({
-    "stockdata.qrData": qrData,
+  // Resolve the scanned QR through the qrcodes collection by qrId -- the same
+  // source of truth the factory / warehouse-in scans use. This tells us the
+  // product/category the physical QR represents, independent of whatever string
+  // was copied into stocks.stockdata at stock-in time.
+  const qrDoc = await qrCodeModel.findOne(
+    { "qrCodes.qrId": qrData },
+    { "qrCodes.$": 1, productionNo: 1 }
+  );
+  const scannedQr = qrDoc?.qrCodes?.[0] || null;
+
+  // Locate the stock document + undispatched item for this QR.
+  //  (a) Primary: exact match on the stored qrData/qrId (normal case).
+  //  (b) Fallback: if the stored qr string drifted from the current qrId (the QR
+  //      set was regenerated after stock-in), resolve via the QR's own
+  //      product/category and take the next undispatched unit in one of the
+  //      manager's warehouses. This mirrors how warehouse-in resolves the QR and
+  //      stops dispatch from being the only stage keyed on the stock string.
+  let stock = await Stock.findOne({
+    $or: [{ "stockdata.qrData": qrData }, { "stockdata.qrId": qrData }],
   })
     .populate("factory", "name")
     .populate("warehouse", "name");
 
-  if (!stock) {
-    throw new Error("QR code invalid or already dispatched");
+  let stockItem =
+    stock?.stockdata.find(
+      (s) =>
+        (s.qrData === qrData || s.qrId === qrData) && s.dispatched === false
+    ) || null;
+
+  if (!stockItem && scannedQr) {
+    const whObjectIds = managerWarehouseIds
+      .filter((id) => mongoose.Types.ObjectId.isValid(id))
+      .map((id) => new mongoose.Types.ObjectId(id));
+
+    stock = await Stock.findOne({
+      warehouse: { $in: whObjectIds },
+      stockdata: {
+        $elemMatch: {
+          productId: scannedQr.productId,
+          categoryId: scannedQr.categoryId,
+          dispatched: false,
+        },
+      },
+    })
+      .populate("factory", "name")
+      .populate("warehouse", "name");
+
+    stockItem =
+      stock?.stockdata.find(
+        (s) =>
+          String(s.productId) === String(scannedQr.productId) &&
+          String(s.categoryId) === String(scannedQr.categoryId) &&
+          s.dispatched === false
+      ) || null;
   }
 
-  // Locate stock item that is not yet dispatched
-  const stockItem = stock.stockdata.find(
-    (s) => s.qrData === qrData && s.dispatched === false
-  );
-
-  if (!stockItem) {
-    throw new Error("Stock item already dispatched");
+  if (!stock || !stockItem) {
+    throw new Error("QR code invalid or already dispatched");
   }
 
   // ✅ The warehouse this QR's stock belongs to must be assigned to the manager
@@ -521,6 +563,37 @@ exports.scanAndDispatch = async (req) => {
     throw new Error(`Order ${ordNumScanFor} not found`);
   }
 
+  // The variant being dispatched is defined by the QR itself (resolved from the
+  // qrcodes collection by qrId), exactly like the factory / warehouse-in scans.
+  // Fall back to the stock item only if the QR doc is missing. We then match it
+  // to the selected order by the FULL variant: article (productId) + categoryCode
+  // + color + size + type + quality. categoryId ids can differ between the
+  // wishlist/order path and the production/QR path, so we compare attributes (and
+  // still accept an exact id match).
+  const scanProductId = scannedQr?.productId || stockItem.productId;
+  const scanCategoryId = scannedQr?.categoryId || stockItem.categoryId;
+
+  const dispatchProduct = await Product.findById(scanProductId).select("category");
+  const variantSig = (categoryId) => {
+    const cat = dispatchProduct?.category?.find(
+      (c) => String(c._id) === String(categoryId)
+    );
+    if (!cat) return null;
+    const normSet = (v) =>
+      (Array.isArray(v) ? v : v == null ? [] : [v])
+        .map((x) => String(x).trim().toLowerCase())
+        .sort()
+        .join(",");
+    return [
+      String(cat.categoryCode ?? "").trim().toLowerCase(),
+      String(cat.color ?? "").trim().toLowerCase(),
+      String(cat.size ?? "").trim().toLowerCase(),
+      normSet(cat.type),
+      normSet(cat.quality),
+    ].join("|");
+  };
+  const scanSig = variantSig(scanCategoryId);
+
   // ✅ Locate the order item + its allocation for THIS warehouse that still has
   // remaining quantity to dispatch (scanqtyatdispatch < quantity). Multiple
   // items can share an article, so we pick the next allocation with capacity.
@@ -530,11 +603,12 @@ exports.scanAndDispatch = async (req) => {
   let targetWh = null;
 
   for (const it of order.items) {
-    if (
-      String(it.productId) !== String(stockItem.productId) ||
-      String(it.categoryId) !== String(stockItem.categoryId)
-    )
-      continue;
+    if (String(it.productId) !== String(scanProductId)) continue;
+
+    const sameVariant =
+      String(it.categoryId) === String(scanCategoryId) ||
+      (scanSig && variantSig(it.categoryId) === scanSig);
+    if (!sameVariant) continue;
 
     productMatched = true;
 
@@ -553,8 +627,25 @@ exports.scanAndDispatch = async (req) => {
   }
 
   if (!productMatched) {
+    // Surface exactly what the QR resolved to vs what the order contains, so a
+    // variant mismatch is diagnosable from the scan result instead of guessing.
+    const describeVariant = (categoryId) => {
+      const cat = dispatchProduct?.category?.find(
+        (c) => String(c._id) === String(categoryId)
+      );
+      if (!cat) return `categoryId ${categoryId} (not found on product)`;
+      const list = (v) => (Array.isArray(v) ? v.join("/") : v ?? "-");
+      return `${cat.categoryCode}/${cat.color}/${cat.size}/${list(cat.type)}/${list(cat.quality)}`;
+    };
+    const scannedVariant = describeVariant(scanCategoryId);
+    const orderVariants = order.items
+      .filter((it) => String(it.productId) === String(scanProductId))
+      .map((it) => describeVariant(it.categoryId))
+      .join(" ; ");
     throw new Error(
-      `Product variation is not part of order ${ordNumScanFor}.`
+      `Product variation is not part of order ${ordNumScanFor}. ` +
+        `Scanned QR variant: [${scannedVariant}]. ` +
+        `Order variant(s) for this product: [${orderVariants || "none"}].`
     );
   }
 
@@ -579,9 +670,12 @@ exports.scanAndDispatch = async (req) => {
 
   await stock.save();
 
-  // ✅ Record which order this QR was scanned for, and when, on the QR doc
+  // ✅ Record which order this QR was scanned for, and when, on the QR doc.
+  // Match by the scanned qrId (qrData). Previously this used stockItem.qrId,
+  // which the stock schema silently dropped, so this update never applied and
+  // the QR's warehouseDispatch flag stayed false.
   await qrCodeModel.updateOne(
-    { "qrCodes.qrId": stockItem.qrId },
+    { "qrCodes.qrId": stockItem.qrId || qrData },
     {
       $set: {
         "qrCodes.$.ordNumScanFor": ordNumScanFor,

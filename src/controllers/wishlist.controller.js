@@ -223,13 +223,15 @@ exports.updateWishlistById = async (req, res) => {
 exports.completeWishlist = async (req, res) => {
   try {
     const { id } = req.params;
+    const { schemesId } = req.body || {};
 
-    const wishlist = await WishlistService.findandmarkdone(id);
+    const { order, history } = await WishlistService.findandmarkdone(id, schemesId);
 
     return res.status(200).json({
-      wishlist: wishlist,
+      order,
+      wishlist: history,
       success: true,
-      message: "Wishlist Successfully Accepted"
+      message: "Wishlist approved and order created successfully"
     });
 
   } catch (error) {

@@ -206,13 +206,20 @@ exports.createProduct = async (data) => {
       throw new Error(`Article '${data.article}' not found in product catalog.`);
     }
 
-    //  Step 4: Check category fields
+    //  Step 4: Check category fields.
+    //  categoryCode MUST be part of the match: a single color+size+type+quality
+    //  combo can exist under different categoryCodes, and the wishlist/cart/order
+    //  all resolve the sub-document using categoryCode too. Omitting it here made
+    //  production pick the first color/size/type/quality match, landing on a
+    //  different categoryId than the order -> the generated QRs then could not be
+    //  dispatched against that order.
     const matchedCategory = productByArticle.category.find(cat => {
+      const codeMatch = String(cat.categoryCode) === String(data.categoryCode);
       const colorMatch = cat.color === data.color;
       const sizeMatch = cat.size === data.size;
       const typeMatch = Array.isArray(cat.type) ? cat.type.includes(selectedType) : cat.type === selectedType;
       const qualityMatch = Array.isArray(cat.quality) ? cat.quality.includes(selectedQuality) : cat.quality === selectedQuality;
-      return colorMatch && sizeMatch && typeMatch && qualityMatch;
+      return codeMatch && colorMatch && sizeMatch && typeMatch && qualityMatch;
     });
 
     // Step 5: If no exact category match, build hierarchical error

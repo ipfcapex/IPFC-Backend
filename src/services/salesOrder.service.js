@@ -468,10 +468,22 @@ exports.AddOrdertoCart = async ({ customer, location, items, schemesId, createdB
     //   );
     // }
 
-// Match type/quality too: a single color+size can have multiple sub-documents
-// differing only by type/quality (Soft/Hard/Common x A/B) that share the same
-// categoryCode. Without them we would always resolve the first variant, which
-// stores the wrong categoryId and mis-keys the stock lookup below.
+// STRICT variant match. article + categoryCode + color + size + type + quality
+// must ALL be present and matched. A single color+size+categoryCode can have
+// multiple sub-documents differing only by type/quality (Soft/Hard/Common x
+// A/B). If type/quality are not enforced we resolve the FIRST such variant and
+// store the wrong categoryId, which then mismatches the production/stock/QR and
+// makes the order impossible to dispatch.
+if (
+  !item.article || !item.categoryCode || !item.color ||
+  !item.size || !item.type || !item.quality
+) {
+  throw new Error(
+    `Incomplete product details for article ${item.article || "?"}: ` +
+      `article, categoryCode, color, size, type and quality are all required.`
+  );
+}
+
 const productRecord = await Product.findOne({
   article: item.article,
   category: {
@@ -479,8 +491,8 @@ const productRecord = await Product.findOne({
       categoryCode: item.categoryCode,
       color: { $regex: new RegExp(`^${item.color}$`, "i") }, // case-insensitive
       size: { $regex: new RegExp(`^${item.size}$`, "i") },
-      ...(item.type && { type: { $regex: new RegExp(`^${item.type}$`, "i") } }),
-      ...(item.quality && { quality: { $regex: new RegExp(`^${item.quality}$`, "i") } })
+      type: { $regex: new RegExp(`^${item.type}$`, "i") },
+      quality: { $regex: new RegExp(`^${item.quality}$`, "i") }
     }
   }
 });
@@ -489,15 +501,13 @@ let imageUrl = null;
 let dbarticleocode = null;
 let matchedCategoryId = null;
 if (productRecord && productRecord.category?.length > 0) {
-  // Find the exact category within the array
+  // Find the exact category within the array (all six fields must match)
   const matchedCategory = productRecord.category.find(cat =>
     cat.categoryCode === item.categoryCode &&
-    cat.color.toLowerCase() === item.color.toLowerCase() &&
-    cat.size.toLowerCase() === item.size.toLowerCase() &&
-    (!item.type ||
-      (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase())) &&
-    (!item.quality ||
-      (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase()))
+    cat.color?.toLowerCase() === item.color.toLowerCase() &&
+    cat.size?.toLowerCase() === item.size.toLowerCase() &&
+    (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase()) &&
+    (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase())
   );
 
   if (matchedCategory) {
@@ -505,6 +515,15 @@ if (productRecord && productRecord.category?.length > 0) {
     dbarticleocode = matchedCategory.articleCode;
     matchedCategoryId = matchedCategory._id;
   }
+}
+
+// Never create an order line with an unresolved / wrong variant.
+if (!matchedCategoryId) {
+  throw new Error(
+    `No matching product variant for article ${item.article}, ` +
+      `categoryCode ${item.categoryCode}, color ${item.color}, size ${item.size}, ` +
+      `type ${item.type}, quality ${item.quality}.`
+  );
 }
 
 const itemWithImage = {
