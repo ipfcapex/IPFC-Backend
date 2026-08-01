@@ -633,3 +633,29 @@ exports.stopOrder = async (req, res) => {
     });
   }
 };
+
+// GET /sale-order/article-names  — distinct article names for the dropdown
+exports.getArticleNames = async (req, res) => {
+  try {
+    const result = await orderService.getArticleNames();
+    return res.status(result.success ? 200 : 500).json(result);
+  } catch (error) {
+    console.error("Error in getArticleNames:", error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// GET /sale-order/article-details/:articleName  — all variants + qty for a given article
+exports.getArticleDetailsByName = async (req, res) => {
+  try {
+    const { articleName } = req.params;
+    if (!articleName) {
+      return res.status(400).json({ success: false, message: "Article name is required" });
+    }
+    const result = await orderService.getArticleDetailsByName(decodeURIComponent(articleName));
+    return res.status(result.success ? 200 : 404).json(result);
+  } catch (error) {
+    console.error("Error in getArticleDetailsByName:", error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

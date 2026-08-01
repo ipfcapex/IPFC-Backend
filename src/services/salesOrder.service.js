@@ -1408,3 +1408,193 @@ exports.stopOrder = async (orderId) => {
 
   return order;
 };
+
+/* ============================================================
+   GET ALL DISTINCT ARTICLE NAMES (for dropdown)
+   ============================================================ */
+exports.getArticleNames = async () => {
+  try {
+    const products = await Product.find({ isActive: true }).select("article").lean();
+    const names = [...new Set(products.map(p => String(p.article)).filter(Boolean))].sort();
+    return { success: true, data: names };
+  } catch (error) {
+    console.error("Error fetching article names:", error);
+    return { success: false, message: "Failed to fetch article names", error: error.message };
+  }
+};
+
+/* ============================================================
+   GET ARTICLE DETAILS BY NAME (all category variants + quantities)
+   ============================================================ */
+exports.getArticleDetailsByName = async (articleName) => {
+  try {
+    // Find the product matching the article name
+    const product = await Product.findOne({
+      article: { $regex: new RegExp(`^${articleName}$`, "i") },
+      isActive: true,
+    }).lean();
+
+    if (!product) {
+      return { success: false, message: "Article not found" };
+    }
+
+    const productId = product._id;
+
+    // Aggregate warehouse stock for this product
+    const stockAgg = await Stock.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      { $unwind: "$stockdata" },
+      { $match: { "stockdata.productId": productId, "stockdata.dispatched": false } },
+      {
+        $group: {
+          _id: "$stockdata.categoryId",
+          stockQty: { $sum: "$stockdata.quantity" },
+        },
+      },
+    ]);
+
+    // Aggregate production stock for this product
+    const prodAgg = await Production.aggregate([
+      { $match: { isActive: { $ne: false }, productId: productId } },
+      {
+        $group: {
+          _id: "$categoryId",
+          totalProduction: { $sum: { $ifNull: ["$stockinQuantity", 0] } },
+          totalDispatched: { $sum: { $ifNull: ["$dispatchedQuantity", 0] } },
+        },
+      },
+      {
+        $project: {
+          _id: 1,
+          productionQty: { $subtract: ["$totalProduction", "$totalDispatched"] },
+        },
+      },
+    ]);
+
+    // Aggregate order qty for this product
+    const orderAgg = await SellOrder.aggregate([
+      {
+        $match: {
+          isActive: true,
+          deliveryStatus: { $nin: ["DELIVERED", "PARTIALLY_DELIVERED", "COMPLETED"] },
+          accountSectionApproval: { $in: ["PENDING", "APPROVED"] },
+          inventoryManagerApproval: { $in: ["PENDING", "APPROVED"] },
+        },
+      },
+      { $unwind: "$items" },
+      { $match: { "items.productId": productId } },
+      {
+        $addFields: {
+          itemQuantity: {
+            $cond: [
+              { $gt: [{ $size: { $ifNull: ["$items.warehouses", []] } }, 0] },
+              {
+                $sum: {
+                  $map: {
+                    input: "$items.warehouses",
+                    as: "w",
+                    in: {
+                      $cond: [{ $eq: ["$$w.ScanByorder", "UNSCANNED"] }, "$$w.quantity", 0],
+                    },
+                  },
+                },
+              },
+              "$items.quantity",
+            ],
+          },
+        },
+      },
+      {
+        $group: {
+          _id: "$items.categoryId",
+          orderQty: { $sum: "$itemQuantity" },
+        },
+      },
+    ]);
+
+    // Aggregate cart qty for this product
+    const cartAgg = await Cart.aggregate([
+      { $match: { isActive: true } },
+      { $unwind: { path: "$items" } },
+      { $match: { "items.productId": productId } },
+      {
+        $group: {
+          _id: "$items.categoryId",
+          cartQty: { $sum: { $ifNull: ["$items.quantity", 0] } },
+        },
+      },
+    ]);
+
+    // Aggregate wishlist qty for this product
+    const wishlistAgg = await Wishlist.aggregate([
+      {
+        $match: {
+          isActive: true,
+          wishlistStockTime: { $ne: null },
+        },
+      },
+      { $unwind: "$WishList" },
+      { $match: { "WishList.productId": productId } },
+      {
+        $group: {
+          _id: "$WishList.categoryId",
+          wishlistQty: { $sum: { $ifNull: ["$WishList.quantity", 0] } },
+        },
+      },
+    ]);
+
+    // Build lookup maps keyed by categoryId string
+    const stockMap = {};
+    stockAgg.forEach(s => { stockMap[String(s._id)] = s.stockQty || 0; });
+    const prodMap = {};
+    prodAgg.forEach(p => { prodMap[String(p._id)] = p.productionQty || 0; });
+    const orderMap = {};
+    orderAgg.forEach(o => { orderMap[String(o._id)] = o.orderQty || 0; });
+    const cartMap = {};
+    cartAgg.forEach(c => { cartMap[String(c._id)] = c.cartQty || 0; });
+    const wishlistMap = {};
+    wishlistAgg.forEach(w => { wishlistMap[String(w._id)] = w.wishlistQty || 0; });
+
+    // Build response with one row per active category variant
+    const variants = (product.category || [])
+      .filter(cat => cat.isActive !== false)
+      .map(cat => {
+        const catId = String(cat._id);
+        const stockQty = stockMap[catId] || 0;
+        const productionQty = prodMap[catId] || 0;
+        const orderQty = orderMap[catId] || 0;
+        const cartQty = cartMap[catId] || 0;
+        const wishlistQty = wishlistMap[catId] || 0;
+        const total = Math.max(stockQty + productionQty - orderQty - cartQty - wishlistQty, 0);
+
+        return {
+          categoryId: cat._id,
+          categoryCode: cat.categoryCode,
+          size: cat.size,
+          color: cat.color,
+          type: Array.isArray(cat.type) ? cat.type.join(", ") : (cat.type || ""),
+          quality: Array.isArray(cat.quality) ? cat.quality.join(", ") : (cat.quality || ""),
+          articleCode: cat.articleCode || "",
+          image: cat.image || [],
+          Warehouse_Qty: stockQty,
+          Production_Qty: productionQty,
+          Order_Qty: orderQty,
+          Cart_Qty: cartQty,
+          Wishlist_Qty: wishlistQty,
+          Total_Available: total,
+        };
+      });
+
+    return {
+      success: true,
+      data: {
+        articleName: product.article,
+        productId: product._id,
+        variants,
+      },
+    };
+  } catch (error) {
+    console.error("Error fetching article details by name:", error);
+    return { success: false, message: "Failed to fetch article details", error: error.message };
+  }
+};
