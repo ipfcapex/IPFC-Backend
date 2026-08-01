@@ -27,6 +27,10 @@ const sesClient = new SESClient({
 
 // 2. The Test Function - Now accepts arguments
 const sendEmailOTP = async (recipientEmail, otp) => {
+  if (process.env.NODE_ENV === "dev") {
+    console.log(`[DEV] SES blocked. OTP for ${recipientEmail} is ${otp}`);
+    return { skipped: true };
+  }
   const params = {
     Source: "noreply@apexshoes.org",
     Destination: {
@@ -71,6 +75,10 @@ const sendEmailOTP = async (recipientEmail, otp) => {
 };
 
 const resendEmailOTP = async (recipientEmail, otp) => {
+  if (process.env.NODE_ENV === "dev") {
+    console.log(`[DEV] SES blocked. OTP for ${recipientEmail} is ${otp}`);
+    return { skipped: true };
+  }
   const params = {
     Source: "noreply@apexshoes.org",
     Destination: {
@@ -115,6 +123,10 @@ const resendEmailOTP = async (recipientEmail, otp) => {
 };
 
 const sendEmailOTPforpasswordchange = async (recipientEmail, otp) => {
+  if (process.env.NODE_ENV === "dev") {
+    console.log(`[DEV] SES blocked. OTP for ${recipientEmail} is ${otp}`);
+    return { skipped: true };
+  }
   const params = {
     Source: "noreply@apexshoes.org",
     Destination: {

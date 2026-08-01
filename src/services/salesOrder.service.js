@@ -79,7 +79,7 @@ async function enrichOrdersWithProductDetails(orders) {
 }
 exports.enrichOrdersWithProductDetails = enrichOrdersWithProductDetails;
 
-exports.getAggregatedStock = async (page = 1, limit = 10, search = "") => {
+exports.getAggregatedStock = async (page = 1, limit = 10, search = "", excludeWishlistId = null) => {
   const skip = (page - 1) * limit;
 
   /* ===============================
@@ -210,7 +210,17 @@ const wishlistAgg = await Wishlist.aggregate([
   {
     $match: {
       isActive: true,
-      wishlistStockTime: { $ne: null} // only valid wishlist
+      // The Wishlist collection only holds pending wishlists now (accepted /
+      // rejected / timed-out ones are archived to WishlistHistory and removed),
+      // so every remaining wishlist with stock applied is a live reservation.
+      wishlistStockTime: { $ne: null}, // only valid wishlist
+      // When creating an order FROM a wishlist, that wishlist's own reserved
+      // qty must NOT be counted against availability (the salesperson is
+      // converting it into an order). For a normal order excludeWishlistId is
+      // null and every pending wishlist keeps reserving.
+      ...(excludeWishlistId
+        ? { _id: { $ne: new mongoose.Types.ObjectId(excludeWishlistId) } }
+        : {})
     }
   },
   { $unwind: "$WishList" },
@@ -458,22 +468,46 @@ exports.AddOrdertoCart = async ({ customer, location, items, schemesId, createdB
     //   );
     // }
 
+// STRICT variant match. article + categoryCode + color + size + type + quality
+// must ALL be present and matched. A single color+size+categoryCode can have
+// multiple sub-documents differing only by type/quality (Soft/Hard/Common x
+// A/B). If type/quality are not enforced we resolve the FIRST such variant and
+// store the wrong categoryId, which then mismatches the production/stock/QR and
+// makes the order impossible to dispatch.
+if (
+  !item.article || !item.categoryCode || !item.color ||
+  !item.size || !item.type || !item.quality
+) {
+  throw new Error(
+    `Incomplete product details for article ${item.article || "?"}: ` +
+      `article, categoryCode, color, size, type and quality are all required.`
+  );
+}
+
 const productRecord = await Product.findOne({
   article: item.article,
-  "category.categoryCode": item.categoryCode,
-  "category.color": { $regex: new RegExp(`^${item.color}$`, "i") }, // case-insensitive
-  "category.size": { $regex: new RegExp(`^${item.size}$`, "i") },
+  category: {
+    $elemMatch: {
+      categoryCode: item.categoryCode,
+      color: { $regex: new RegExp(`^${item.color}$`, "i") }, // case-insensitive
+      size: { $regex: new RegExp(`^${item.size}$`, "i") },
+      type: { $regex: new RegExp(`^${item.type}$`, "i") },
+      quality: { $regex: new RegExp(`^${item.quality}$`, "i") }
+    }
+  }
 });
 
 let imageUrl = null;
 let dbarticleocode = null;
 let matchedCategoryId = null;
 if (productRecord && productRecord.category?.length > 0) {
-  // Find the exact category within the array
+  // Find the exact category within the array (all six fields must match)
   const matchedCategory = productRecord.category.find(cat =>
     cat.categoryCode === item.categoryCode &&
-    cat.color.toLowerCase() === item.color.toLowerCase() &&
-    cat.size.toLowerCase() === item.size.toLowerCase()
+    cat.color?.toLowerCase() === item.color.toLowerCase() &&
+    cat.size?.toLowerCase() === item.size.toLowerCase() &&
+    (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase()) &&
+    (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase())
   );
 
   if (matchedCategory) {
@@ -481,6 +515,15 @@ if (productRecord && productRecord.category?.length > 0) {
     dbarticleocode = matchedCategory.articleCode;
     matchedCategoryId = matchedCategory._id;
   }
+}
+
+// Never create an order line with an unresolved / wrong variant.
+if (!matchedCategoryId) {
+  throw new Error(
+    `No matching product variant for article ${item.article}, ` +
+      `categoryCode ${item.categoryCode}, color ${item.color}, size ${item.size}, ` +
+      `type ${item.type}, quality ${item.quality}.`
+  );
 }
 
 const itemWithImage = {
@@ -923,18 +966,18 @@ exports.deleteWishlist = async (id) => {
 
       return {
         success: true,
-        message: "SellOrder wishlist cleared successfully",
+        message: "Wishlist removed successfully",
         clearedData,
       };
     }
 
-    return { success: false, message: "SellOrder wishlist is already empty" };
+    return { success: false, message: "This wishlist is already empty" };
   }
 
   // Not found in SellOrder → check Cart
   const cartDoc = await Cart.findById(id);
   if (!cartDoc) {
-    return { success: false, message: "Document not found in SellOrder or Cart" };
+    return { success: false, message: "Wishlist not found" };
   }
 
   const itemsEmpty = !cartDoc.items || cartDoc.items.length === 0;
@@ -945,7 +988,7 @@ exports.deleteWishlist = async (id) => {
     const deletedCart = await Cart.findByIdAndDelete(id);
     return {
       success: true,
-      message: "Cart entry deleted successfully (items were empty)",
+      message: "Wishlist removed successfully",
       deletedData: deletedCart,
     };
   } else if (!itemsEmpty && wishlistExists) {
@@ -956,12 +999,12 @@ exports.deleteWishlist = async (id) => {
 
     return {
       success: true,
-      message: "Wishlist cleared from Cart (items not empty)",
+      message: "Wishlist removed successfully",
       clearedData,
     };
   }
 
-  return { success: false, message: "Cart not deleted (items empty or wishlist empty)" };
+  return { success: false, message: "This wishlist is already empty" };
 };
 
 //move wishlist to cart
@@ -1112,7 +1155,9 @@ exports.reverseDelivery = async (id, payload) => {
     (cat) =>
       String(cat.categoryCode) === String(categoryCode) &&
       String(cat.color).toLowerCase() === String(color).toLowerCase() &&
-      String(cat.size).toLowerCase() === String(size).toLowerCase()
+      String(cat.size).toLowerCase() === String(size).toLowerCase() &&
+      (cat.type || []).some(t => String(t).toLowerCase() === String(type).toLowerCase()) &&
+      (cat.quality || []).some(q => String(q).toLowerCase() === String(quality).toLowerCase())
   );
   if (!matchedCategory) {
     throw new Error("Matching category combination not found in product catalog.");

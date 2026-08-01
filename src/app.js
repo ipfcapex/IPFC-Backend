@@ -12,6 +12,7 @@ const { Server } = require("socket.io");
 const path = require("path");
 require("./services/monitor.token");
 require("./services/runStockReportJob.service");
+require("./services/wishlistTimeout.service");
 
 dotenv.config();
 

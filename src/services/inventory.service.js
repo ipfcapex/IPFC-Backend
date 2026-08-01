@@ -451,38 +451,55 @@ sendNotification("inventoryRejected", notification);
       }
     });
 
-    // Resolve and assign productId & categoryId for each item before saving
+    // Resolve display fields (articleCode/image) for each item before saving.
+    // IMPORTANT: match the FULL variant (categoryCode + color + size + type +
+    // quality). Matching on only categoryCode/color/size would resolve the FIRST
+    // type/quality sub-document and OVERWRITE the order's correct categoryId with
+    // a different variant (e.g. Soft -> Common). We only overwrite categoryId when
+    // we have an exact type+quality match; otherwise we keep the categoryId the
+    // order already carries from creation.
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
+      const hasVariant = !!(item.type && item.quality);
+
       const productRecord = await Product.findOne({
         article: item.article,
-        "category.categoryCode": item.categoryCode,
-        "category.color": { $regex: new RegExp(`^${item.color}$`, "i") },
-        "category.size": { $regex: new RegExp(`^${item.size}$`, "i") },
+        category: {
+          $elemMatch: {
+            categoryCode: item.categoryCode,
+            color: { $regex: new RegExp(`^${item.color}$`, "i") },
+            size: { $regex: new RegExp(`^${item.size}$`, "i") },
+            ...(hasVariant && {
+              type: { $regex: new RegExp(`^${item.type}$`, "i") },
+              quality: { $regex: new RegExp(`^${item.quality}$`, "i") },
+            }),
+          },
+        },
       });
 
-      let matchedCategoryId = null;
-      let dbarticleocode = null;
-      let imageUrl = null;
+      let matchedCategory = null;
       if (productRecord && productRecord.category?.length > 0) {
-        const matchedCategory = productRecord.category.find(cat =>
+        matchedCategory = productRecord.category.find(cat =>
           cat.categoryCode === item.categoryCode &&
-          cat.color.toLowerCase() === item.color.toLowerCase() &&
-          cat.size.toLowerCase() === item.size.toLowerCase()
+          cat.color?.toLowerCase() === item.color?.toLowerCase() &&
+          cat.size?.toLowerCase() === item.size?.toLowerCase() &&
+          (!hasVariant || (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase())) &&
+          (!hasVariant || (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase()))
         );
-
-        if (matchedCategory) {
-          imageUrl = matchedCategory.image?.[0] || null;
-          dbarticleocode = matchedCategory.articleCode;
-          matchedCategoryId = matchedCategory._id;
-        }
       }
 
-      item.productId = productRecord?._id || item.productId;
-      item.categoryId = matchedCategoryId || item.categoryId;
-      if (dbarticleocode) item.articleCode = dbarticleocode;
-      if (imageUrl && (!item.image || item.image.length === 0)) {
-        item.image = [imageUrl];
+      if (productRecord) item.productId = productRecord._id;
+      // Only overwrite categoryId on an EXACT variant match, so approval can never
+      // change which type/quality the order is for.
+      if (hasVariant && matchedCategory) {
+        item.categoryId = matchedCategory._id;
+      }
+      if (matchedCategory) {
+        if (matchedCategory.articleCode) item.articleCode = matchedCategory.articleCode;
+        const imageUrl = matchedCategory.image?.[0] || null;
+        if (imageUrl && (!item.image || item.image.length === 0)) {
+          item.image = [imageUrl];
+        }
       }
     }
 

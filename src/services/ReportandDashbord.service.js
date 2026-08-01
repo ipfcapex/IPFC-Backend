@@ -1233,11 +1233,28 @@ exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter 
         colorSizeSummary: [
           {
             $group: {
-              // ✅ FIX 2: group by categoryCode or article based on type
+              // Segregate by article/category + color + size + type + quality so
+              // the same color/size but different type/quality (Soft/Hard/Common
+              // x A/B) are reported as separate rows. type/quality are stored as
+              // arrays on the category, so take the first element for grouping.
               _id: {
                 articleOrCategory: type === "category" ? "$items.categoryCode" : "$items.article",
                 color: "$items.color",
                 size: "$items.size",
+                type: {
+                  $cond: [
+                    { $isArray: "$items.type" },
+                    { $arrayElemAt: ["$items.type", 0] },
+                    "$items.type",
+                  ],
+                },
+                quality: {
+                  $cond: [
+                    { $isArray: "$items.quality" },
+                    { $arrayElemAt: ["$items.quality", 0] },
+                    "$items.quality",
+                  ],
+                },
               },
               totalQuantitySold: { $sum: "$items.quantity" },
             },
@@ -1248,11 +1265,13 @@ exports.getStockReportWithMoreFilters = ({ type = "category", name = [], filter 
               articleOrCategory: "$_id.articleOrCategory", // ✅ FIX 3: matches new _id key
               color: "$_id.color",
               size: "$_id.size",
+              type: "$_id.type",
+              quality: "$_id.quality",
               totalQuantitySold: 1,
               ...(financialYear && { financialYear }),
             },
           },
-          { $sort: { articleOrCategory: 1, color: 1, size: 1 } },
+          { $sort: { articleOrCategory: 1, color: 1, size: 1, type: 1, quality: 1 } },
         ],
         cumulativeTotalByArticle: [
           {

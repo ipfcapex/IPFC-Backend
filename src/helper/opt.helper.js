@@ -6,6 +6,10 @@ const crypto = require("crypto");
  * @returns {string} OTP
  */
 const generateOtp = (digits = 6) => {
+  // In dev, always return a fixed OTP so no real email/SES is needed.
+  if (process.env.NODE_ENV === "dev") {
+    return "123456";
+  }
   const max = 10 ** digits;
   const num = Math.floor(Math.random() * (max - 10 ** (digits - 1))) + 10 ** (digits - 1);
   return String(num);

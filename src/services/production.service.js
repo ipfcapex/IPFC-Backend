@@ -111,14 +111,13 @@ const attachCategoryDetail = (prod) => {
 //   }
 // };
 
-const applyProductionToWishlists = async (productionData, currentAvailableQty = 0) => {
-  // ✅ FIX: WishList subdocuments store productId + categoryId (ObjectIds),
-  //    NOT text fields like article/categoryCode/color/size/type/quality.
-  //    Querying by those missing fields always returned 0 results.
-  const { productId, categoryId, productionQuantity } = productionData;
-
-  // Total stock available including production
-  let totalAvailableQty = currentAvailableQty + productionQuantity;
+// Find wishlists that need this production (matched by the stored ObjectIds,
+// FIFO by creation) and return the assignment records to persist on the
+// Production. NOTE: this does NOT start any timer. The wishlistStockTime timer
+// is only activated later, during the production stock-in scan, once real
+// stock is scanned in (see activateWishlistTimersFromScan).
+const applyProductionToWishlists = async (productionData) => {
+  const { productId, categoryId } = productionData;
 
   // Find all relevant wishlists by the stored ObjectIds, sorted FIFO
   const wishlists = await Wishlist.find({
@@ -134,52 +133,51 @@ const applyProductionToWishlists = async (productionData, currentAvailableQty = 
 
   console.log(`🔍 applyProductionToWishlists: found ${wishlists.length} matching wishlist(s) for productId=${productId}, categoryId=${categoryId}`);
 
-  if (!wishlists.length) return;
+  // Assignments to persist on the Production record: which wishlists this
+  // production is allocated to, plus the required quantities (FIFO order).
+  const assignments = [];
 
-  // Group wishlists by creator
-  const groupedByCreator = {};
-  wishlists.forEach(w => {
-    const creatorId = String(w.createdBy);
-    if (!groupedByCreator[creatorId]) groupedByCreator[creatorId] = [];
-    groupedByCreator[creatorId].push(w);
-  });
+  for (const wishlist of wishlists) {
+    // Total quantity requested for this wishlist for the given productId + categoryId
+    const totalWishlistQty = wishlist.WishList
+      .filter(i =>
+        String(i.productId) === String(productId) &&
+        String(i.categoryId) === String(categoryId)
+      )
+      .reduce((sum, i) => sum + i.quantity, 0);
 
-  for (const creatorId of Object.keys(groupedByCreator)) {
-    const creatorWishlists = groupedByCreator[creatorId];
+    if (totalWishlistQty === 0) continue;
 
-    for (const wishlist of creatorWishlists) {
-      // Total quantity requested for this wishlist for the given productId + categoryId
-      const totalWishlistQty = wishlist.WishList
-        .filter(i =>
-          String(i.productId) === String(productId) &&
-          String(i.categoryId) === String(categoryId)
-        )
-        .reduce((sum, i) => sum + i.quantity, 0);
-
-      if (totalWishlistQty === 0) continue;
-
-      // ✅ Only assign wishlistStockTime if we have enough stock
-      if (totalAvailableQty >= totalWishlistQty) {
-        totalAvailableQty -= totalWishlistQty;
-
-        await Wishlist.updateOne(
-          { _id: wishlist._id, wishlistStockTime: null },
-          { $set: { wishlistStockTime: new Date() } }
-        );
-
-        console.log(`✅ Wishlist fulfilled → ${wishlist._id} (creator: ${creatorId})`);
-      } else {
-        console.log(`⚠️ Not enough stock for wishlist → ${wishlist._id} (creator: ${creatorId})`);
-      }
-
-      if (totalAvailableQty <= 0) break; // stop if stock depleted
-    }
-
-    if (totalAvailableQty <= 0) break; // stop if stock depleted
+    assignments.push({
+      wishlistId: wishlist._id,
+      assignedQuantity: totalWishlistQty,
+      requiredQuantity: totalWishlistQty,
+    });
   }
 
-  if (totalAvailableQty > 0) {
-    console.log(`⚠️ Remaining stock after fulfilling wishlists: ${totalAvailableQty}`);
+  return assignments;
+};
+
+// Activate the wishlist timer(s) for a production once stock is scanned in.
+// Walks the stored assignments FIFO and starts wishlistStockTime for each
+// wishlist that the scanned-in quantity can fully cover. Already-started timers
+// are left untouched but still consume their reserved quantity.
+const activateWishlistTimersFromScan = async (production) => {
+  const assignments = production.assignwishlistprod || [];
+  if (!assignments.length) return;
+
+  let covered = production.stockinQuantity || 0;
+
+  for (const a of assignments) {
+    const need = a.requiredQuantity || 0;
+    if (covered < need) break; // FIFO: stop at the first wishlist we can't fully cover
+
+    covered -= need;
+    await Wishlist.updateOne(
+      { _id: a.wishlistId, wishlistStockTime: null },
+      { $set: { wishlistStockTime: new Date() } }
+    );
+    console.log(`⏱️ wishlistStockTime activated on scan → ${a.wishlistId}`);
   }
 };
 
@@ -208,13 +206,20 @@ exports.createProduct = async (data) => {
       throw new Error(`Article '${data.article}' not found in product catalog.`);
     }
 
-    //  Step 4: Check category fields
+    //  Step 4: Check category fields.
+    //  categoryCode MUST be part of the match: a single color+size+type+quality
+    //  combo can exist under different categoryCodes, and the wishlist/cart/order
+    //  all resolve the sub-document using categoryCode too. Omitting it here made
+    //  production pick the first color/size/type/quality match, landing on a
+    //  different categoryId than the order -> the generated QRs then could not be
+    //  dispatched against that order.
     const matchedCategory = productByArticle.category.find(cat => {
+      const codeMatch = String(cat.categoryCode) === String(data.categoryCode);
       const colorMatch = cat.color === data.color;
       const sizeMatch = cat.size === data.size;
       const typeMatch = Array.isArray(cat.type) ? cat.type.includes(selectedType) : cat.type === selectedType;
       const qualityMatch = Array.isArray(cat.quality) ? cat.quality.includes(selectedQuality) : cat.quality === selectedQuality;
-      return colorMatch && sizeMatch && typeMatch && qualityMatch;
+      return codeMatch && colorMatch && sizeMatch && typeMatch && qualityMatch;
     });
 
     // Step 5: If no exact category match, build hierarchical error
@@ -308,12 +313,20 @@ exports.createProduct = async (data) => {
 
     const production = await Production.create(productionData);
 
-// Step 9: Apply production to wishlists (match by stored ObjectIds, not text fields)
-    await applyProductionToWishlists({
+// Step 9: Match wishlists that need this production and store them on the
+    // record (matched by stored ObjectIds). The timer is NOT started here; it is
+    // activated later during the production stock-in scan.
+    const assignwishlistprod = await applyProductionToWishlists({
       productId: productByArticle._id,
       categoryId: matchedCategory._id,
-      productionQuantity: data.productionQuantity
     });
+
+    if (assignwishlistprod?.length) {
+      production.assignwishlistprod = assignwishlistprod;
+      await production.save();
+    }
+
+    
 
 
     // 🔔 Optional: Send notification
@@ -474,12 +487,41 @@ exports.getProductsById = async (id) => {
   const production = await Production.findById(id)
     .populate("factory", "name")
     .populate("productId", "article category")
+    .populate({
+      // Resolve the wishlists this production is allocated to, and for each one
+      // the sales person who created it and the customer it belongs to.
+      path: "assignwishlistprod.wishlistId",
+      select: "customer createdBy",
+      populate: [
+        { path: "customer", select: "name phone" },
+        { path: "createdBy", select: "name role" },
+      ],
+    })
     .lean();
   const shaped = attachCategoryDetail(production);
   if (shaped) {
     // article is available via productId, category via categoryId
     delete shaped.article;
     delete shaped.category;
+
+    // Flatten the wishlist allocations into a UI-friendly shape: is this PN
+    // assigned to any wishlist, and if so for which sales person / customer.
+    const assignments = Array.isArray(shaped.assignwishlistprod)
+      ? shaped.assignwishlistprod
+      : [];
+    shaped.wishlistAssignments = assignments.map((a) => {
+      const wl = a.wishlistId && typeof a.wishlistId === "object" ? a.wishlistId : null;
+      return {
+        wishlistId: wl ? wl._id : a.wishlistId,
+        salesPerson: wl && wl.createdBy ? wl.createdBy.name : null,
+        salesPersonRole: wl && wl.createdBy ? wl.createdBy.role : null,
+        customer: wl && wl.customer ? wl.customer.name : null,
+        customerPhone: wl && wl.customer ? wl.customer.phone : null,
+        assignedQuantity: a.assignedQuantity ?? null,
+        requiredQuantity: a.requiredQuantity ?? null,
+      };
+    });
+    shaped.isAssignedToWishlist = shaped.wishlistAssignments.length > 0;
   }
   return shaped;
 };
@@ -780,6 +822,10 @@ exports.scanProducttoinstock = async (qrImage) => {
         : "Ready";
 
     await production.save();
+
+    // Now that real stock is scanned in, activate the wishlist timer(s) for the
+    // wishlists this production was assigned to (FIFO, as far as stock covers).
+    await activateWishlistTimersFromScan(production);
 
     return {
       message: "QR scanned successfully Stock QTy added",

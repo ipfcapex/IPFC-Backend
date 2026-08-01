@@ -5,8 +5,9 @@ const qrCodeEntrySchema = new mongoose.Schema({
   productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
   categoryId: { type: mongoose.Schema.Types.ObjectId },
   quantity: { type: Number, default: 0 },
-  qrData: { type: String}, // Base64 image,
-  dispatched: { type: Boolean, default: false }, 
+  qrData: { type: String}, // holds the QR's qrId string (e.g. "QR-...")
+  qrId: { type: String }, // explicit qrId; kept in sync with qrData at stock-in
+  dispatched: { type: Boolean, default: false },
   stockinAt: { type: Date, default: Date.now },
   dispatchAt: { type: Date }, // only set when dispatched is true
   ordNumScanFor: { type: String },

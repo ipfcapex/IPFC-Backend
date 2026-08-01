@@ -65,9 +65,13 @@ const wishlistSchema = new mongoose.Schema(
   }
 );
 
-wishlistSchema.index(
-  { wishlistStockTime: 1 },
-  { expireAfterSeconds: 43200 }
-);
+// NOTE: the previous TTL index (expireAfterSeconds: 43200) that auto-DELETED
+// wishlists 12h after wishlistStockTime has been removed on purpose. This
+// collection now holds ONLY pending wishlists. When a wishlist is accepted,
+// rejected, or times out, the whole record is copied into WishlistHistory and
+// then removed from here (see wishlist.service.js / wishlistTimeout.service.js).
+// The legacy TTL index is dropped at startup by the timeout job. This plain
+// index keeps the timeout sweep query fast.
+wishlistSchema.index({ wishlistStockTime: 1 });
 
 module.exports = mongoose.model("Wishlist", wishlistSchema);
