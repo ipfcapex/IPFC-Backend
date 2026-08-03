@@ -294,9 +294,14 @@ exports.getCartdatabySalesperson = async (req, res) => {
     const carts = await Cart.find({ createdBy: userId })
       .populate("createdBy", "name email phone role location")
       .populate("customer", "name email phone role location ")
+      .populate({
+        path: "items.productId",
+        model: "Product"
+      })
       .sort({ createdAt: -1 }) // latest first
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean();
 
     if (!carts || carts.length === 0) {
       return res.status(404).json({
@@ -304,6 +309,32 @@ exports.getCartdatabySalesperson = async (req, res) => {
         message: "No carts found for this user"
       });
     }
+
+    // Resolve each cart item's productId/categoryId into the flat article,
+    // categoryCode, color, size, type and quality fields the UI renders
+    // (same enrichment as the sales-order-by-salesperson endpoint).
+    const enrichedCarts = carts.map((cart) => {
+      const formattedItems = (cart.items || []).map((it) => {
+        const product = it.productId;
+        let category = null;
+        if (product && Array.isArray(product.category) && it.categoryId) {
+          category = product.category.find(
+            (c) => c._id.toString() === it.categoryId.toString()
+          );
+        }
+        return {
+          ...it,
+          article: product?.article || "N/A",
+          categoryCode: category?.categoryCode || "N/A",
+          color: category?.color || "N/A",
+          size: category?.size || "N/A",
+          type: category?.type || "N/A",
+          quality: category?.quality || "N/A",
+        };
+      });
+      return { ...cart, items: formattedItems };
+    });
+
     // console.log("order",carts)
     return res.status(200).json({
       success: true,
@@ -311,7 +342,7 @@ exports.getCartdatabySalesperson = async (req, res) => {
       limit,
       total,
       totalPages: Math.ceil(total / limit),
-      data: carts
+      data: enrichedCarts
     });
   } catch (err) {
     console.error("Error fetching cart by salesperson:", err);

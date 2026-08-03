@@ -105,24 +105,46 @@ exports.getWishlistBySalesperson = async (req, res) => {
       return range;
     };
 
+    // 🔎 Single search input: matches the wishlist description as well as the
+    // customer's live name / city / state. Location is read from the customer
+    // record (not a wishlist snapshot), so we resolve the matching customers
+    // first and then filter wishlists by those ids.
     const search =
       req.query.search && req.query.search.trim() !== ""
         ? req.query.search.trim()
         : null;
-    const searchOr = search ? [{ description: new RegExp(search, "i") }] : null;
+    let searchOr = null;
+    if (search) {
+      const rx = new RegExp(search, "i");
+      const matchedCustomers = await Customer.find({
+        $or: [{ name: rx }, { "location.city": rx }, { "location.state": rx }],
+      })
+        .select("_id")
+        .lean();
+      searchOr = [{ description: rx }];
+      if (matchedCustomers.length) {
+        searchOr.push({
+          customer: { $in: matchedCustomers.map((c) => c._id) },
+        });
+      }
+    }
+
+    const applyFilters = (query) => {
+      if (searchOr) query.$or = searchOr;
+    };
 
     // Active (pending) wishlists
     const activeQuery = { createdBy: salesPersonId, isActive: true };
     if (req.query.customer) activeQuery.customer = req.query.customer;
     if (startDate || endDate) activeQuery.createdAt = buildDateRange();
-    if (searchOr) activeQuery.$or = searchOr;
+    applyFilters(activeQuery);
 
     // Archived wishlists (accepted / rejected / timeout). Date filter applies to
     // when the action happened (actionAt).
     const historyQuery = { createdBy: salesPersonId };
     if (req.query.customer) historyQuery.customer = req.query.customer;
     if (startDate || endDate) historyQuery.actionAt = buildDateRange();
-    if (searchOr) historyQuery.$or = searchOr;
+    applyFilters(historyQuery);
 
     const [activeDocs, historyDocs] = await Promise.all([
       Wishlist.find(activeQuery)
