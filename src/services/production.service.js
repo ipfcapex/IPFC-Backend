@@ -158,6 +158,65 @@ const applyProductionToWishlists = async (productionData) => {
   return assignments;
 };
 
+// Build the human-readable article/order details for a wishlist that just
+// became ready for approval, resolving article + category from productId +
+// categoryId (the wishlist items store ids only).
+const buildWishlistArticleDetails = async (wishlist) => {
+  const items = wishlist.WishList || [];
+  const productIds = [
+    ...new Set(items.map((it) => String(it.productId?._id || it.productId)).filter(Boolean)),
+  ];
+  const products = await Product.find({ _id: { $in: productIds } }).select("article category");
+  const pmap = {};
+  products.forEach((p) => { pmap[String(p._id)] = p; });
+
+  return items.map((it) => {
+    const prod = pmap[String(it.productId?._id || it.productId)];
+    const cat = prod?.category?.find(
+      (c) => String(c._id) === String(it.categoryId?._id || it.categoryId)
+    );
+    return {
+      article: prod?.article || null,
+      categoryCode: cat?.categoryCode || null,
+      color: cat?.color || null,
+      size: cat?.size || null,
+      type: cat?.type ? (Array.isArray(cat.type) ? cat.type[0] : cat.type) : null,
+      quality: cat?.quality ? (Array.isArray(cat.quality) ? cat.quality[0] : cat.quality) : null,
+      quantity: it.quantity,
+      image: it.image && it.image.length ? it.image : cat?.image || [],
+    };
+  });
+};
+
+// A wishlist's stock timer just started at production scan-in, so its "Approve"
+// button is now available. Notify the Administrator and the Sales Person who
+// created the wishlist, with the order/article details. Frontend targets the
+// specific salesperson using createdById (events are broadcast, then filtered
+// client-side by role + id).
+const notifyWishlistReadyForApproval = async (wishlist) => {
+  try {
+    const articles = await buildWishlistArticleDetails(wishlist);
+    const customerName = wishlist.customer?.name || "customer";
+    const articleNames = [...new Set(articles.map((a) => a.article).filter(Boolean))].join(", ");
+
+    sendNotification("WishlistReadyForApproval", {
+      message: `Wishlist for ${customerName}${articleNames ? ` (${articleNames})` : ""} is ready for approval after production scan-in.`,
+      createdById: wishlist.createdBy?._id ? String(wishlist.createdBy._id) : null,
+      createdByName: wishlist.createdBy?.name || null,
+      data: {
+        wishlistId: String(wishlist._id),
+        customer: customerName,
+        createdBy: wishlist.createdBy?.name || null,
+        articles,
+      },
+    });
+    console.log(`🔔 WishlistReadyForApproval notified → ${wishlist._id}`);
+  } catch (err) {
+    // Never let a notification failure break the scan-in flow.
+    console.error("notifyWishlistReadyForApproval error:", err.message);
+  }
+};
+
 // Activate the wishlist timer(s) for a production once stock is scanned in.
 // Walks the stored assignments FIFO and starts wishlistStockTime for each
 // wishlist that the scanned-in quantity can fully cover. Already-started timers
@@ -173,11 +232,21 @@ const activateWishlistTimersFromScan = async (production) => {
     if (covered < need) break; // FIFO: stop at the first wishlist we can't fully cover
 
     covered -= need;
-    await Wishlist.updateOne(
+    // findOneAndUpdate with the wishlistStockTime:null filter guarantees we only
+    // transition (and therefore only notify) a wishlist whose Approve button was
+    // not already available. Returns null if it was already started / not found.
+    const activated = await Wishlist.findOneAndUpdate(
       { _id: a.wishlistId, wishlistStockTime: null },
-      { $set: { wishlistStockTime: new Date() } }
-    );
-    console.log(`⏱️ wishlistStockTime activated on scan → ${a.wishlistId}`);
+      { $set: { wishlistStockTime: new Date() } },
+      { new: true }
+    )
+      .populate("createdBy", "name email")
+      .populate("customer", "name");
+
+    if (activated) {
+      console.log(`⏱️ wishlistStockTime activated on scan → ${a.wishlistId}`);
+      await notifyWishlistReadyForApproval(activated);
+    }
   }
 };
 
