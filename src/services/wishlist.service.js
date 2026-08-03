@@ -142,10 +142,27 @@ exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "") => 
   const limitNum = parseInt(limit, 10) || 10;
   const skip = (pageNum - 1) * limitNum;
 
-  const searchOr =
-    search && search.trim() !== ""
-      ? [{ description: { $regex: new RegExp(search.trim(), "i") } }]
-      : null;
+  // Single search input: matches the wishlist description, the embedded
+  // Location snapshot, and the customer's live name / city / state. Location can
+  // live either on the wishlist snapshot or on the customer record, so we resolve
+  // matching customers first and include them alongside the snapshot match.
+  let searchOr = null;
+  if (search && search.trim() !== "") {
+    const regex = new RegExp(search.trim(), "i");
+    const matchedCustomers = await Customer.find({
+      $or: [{ name: regex }, { "location.city": regex }, { "location.state": regex }],
+    })
+      .select("_id")
+      .lean();
+    searchOr = [
+      { description: { $regex: regex } },
+      { "Location.city": { $regex: regex } },
+      { "Location.state": { $regex: regex } },
+    ];
+    if (matchedCustomers.length) {
+      searchOr.push({ customer: { $in: matchedCustomers.map((c) => c._id) } });
+    }
+  }
 
   // Active (pending) wishlists.
   const activeQuery = { isActive: true, ...filter };
