@@ -573,26 +573,48 @@ exports.scanAndDispatch = async (req) => {
   const scanProductId = scannedQr?.productId || stockItem.productId;
   const scanCategoryId = scannedQr?.categoryId || stockItem.categoryId;
 
-  const dispatchProduct = await Product.findById(scanProductId).select("category");
-  const variantSig = (categoryId) => {
-    const cat = dispatchProduct?.category?.find(
-      (c) => String(c._id) === String(categoryId)
-    );
+  // Match by variant ATTRIBUTES (categoryCode/color/size/type/quality), not raw
+  // ids. The order (wishlist) path and the production/QR path can reference
+  // different Product documents for the same physical article, so a
+  // productId/categoryId id-equality check reports "[none]" even when the variant
+  // is identical. Resolve each side's category against ITS OWN product, then
+  // compare signatures (an exact id match is still accepted as a fast path).
+  const normSet = (v) =>
+    (Array.isArray(v) ? v : v == null ? [] : [v])
+      .map((x) => String(x).trim().toLowerCase())
+      .sort()
+      .join(",");
+  const sigFromCat = (cat) =>
+    cat
+      ? [
+          String(cat.categoryCode ?? "").trim().toLowerCase(),
+          String(cat.color ?? "").trim().toLowerCase(),
+          String(cat.size ?? "").trim().toLowerCase(),
+          normSet(cat.type),
+          normSet(cat.quality),
+        ].join("|")
+      : null;
+  const describeCat = (cat) => {
     if (!cat) return null;
-    const normSet = (v) =>
-      (Array.isArray(v) ? v : v == null ? [] : [v])
-        .map((x) => String(x).trim().toLowerCase())
-        .sort()
-        .join(",");
-    return [
-      String(cat.categoryCode ?? "").trim().toLowerCase(),
-      String(cat.color ?? "").trim().toLowerCase(),
-      String(cat.size ?? "").trim().toLowerCase(),
-      normSet(cat.type),
-      normSet(cat.quality),
-    ].join("|");
+    const list = (v) => (Array.isArray(v) ? v.join("/") : v ?? "-");
+    return `${cat.categoryCode}/${cat.color}/${cat.size}/${list(cat.type)}/${list(cat.quality)}`;
   };
-  const scanSig = variantSig(scanCategoryId);
+
+  // Load the scanned product + every product referenced by the order items.
+  const orderProductIds = (order.items || [])
+    .map((it) => it.productId && String(it.productId))
+    .filter(Boolean);
+  const productDocs = await Product.find({
+    _id: { $in: [...new Set([String(scanProductId), ...orderProductIds])].filter(Boolean) },
+  }).select("category");
+  const productMap = new Map(productDocs.map((p) => [String(p._id), p]));
+
+  const catOf = (productId, categoryId) => {
+    const prod = productMap.get(String(productId));
+    return prod?.category?.find((c) => String(c._id) === String(categoryId)) || null;
+  };
+  const scanCat = catOf(scanProductId, scanCategoryId);
+  const scanSig = sigFromCat(scanCat);
 
   // ✅ Locate the order item + its allocation for THIS warehouse that still has
   // remaining quantity to dispatch (scanqtyatdispatch < quantity). Multiple
@@ -603,11 +625,10 @@ exports.scanAndDispatch = async (req) => {
   let targetWh = null;
 
   for (const it of order.items) {
-    if (String(it.productId) !== String(scanProductId)) continue;
-
     const sameVariant =
-      String(it.categoryId) === String(scanCategoryId) ||
-      (scanSig && variantSig(it.categoryId) === scanSig);
+      (String(it.productId) === String(scanProductId) &&
+        String(it.categoryId) === String(scanCategoryId)) ||
+      (scanSig && sigFromCat(catOf(it.productId, it.categoryId)) === scanSig);
     if (!sameVariant) continue;
 
     productMatched = true;
@@ -629,23 +650,18 @@ exports.scanAndDispatch = async (req) => {
   if (!productMatched) {
     // Surface exactly what the QR resolved to vs what the order contains, so a
     // variant mismatch is diagnosable from the scan result instead of guessing.
-    const describeVariant = (categoryId) => {
-      const cat = dispatchProduct?.category?.find(
-        (c) => String(c._id) === String(categoryId)
-      );
-      if (!cat) return `categoryId ${categoryId} (not found on product)`;
-      const list = (v) => (Array.isArray(v) ? v.join("/") : v ?? "-");
-      return `${cat.categoryCode}/${cat.color}/${cat.size}/${list(cat.type)}/${list(cat.quality)}`;
-    };
-    const scannedVariant = describeVariant(scanCategoryId);
+    // Each variant is described from its OWN product so an id drift between the
+    // order and production paths still renders readable attributes.
+    const scannedVariant =
+      describeCat(scanCat) || `categoryId ${scanCategoryId} (not found on product)`;
     const orderVariants = order.items
-      .filter((it) => String(it.productId) === String(scanProductId))
-      .map((it) => describeVariant(it.categoryId))
+      .map((it) => describeCat(catOf(it.productId, it.categoryId)))
+      .filter(Boolean)
       .join(" ; ");
     throw new Error(
       `Product variation is not part of order ${ordNumScanFor}. ` +
         `Scanned QR variant: [${scannedVariant}]. ` +
-        `Order variant(s) for this product: [${orderVariants || "none"}].`
+        `Order variant(s): [${orderVariants || "none"}].`
     );
   }
 

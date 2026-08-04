@@ -1297,6 +1297,24 @@ exports.getOrdersForWarehouseScan = async (warehouseIds = []) => {
     },
   });
 
+  // Sums a numeric field over a single item's warehouse allocations that belong
+  // to this manager's warehouse(s).
+  const itemScopedSum = (field) => ({
+    $sum: {
+      $map: {
+        input: {
+          $filter: {
+            input: { $ifNull: ["$$item.warehouses", []] },
+            as: "w",
+            cond: { $in: ["$$w.warehouse", whObjectIds] },
+          },
+        },
+        as: "w",
+        in: { $ifNull: [`$$w.${field}`, 0] },
+      },
+    },
+  });
+
   const orders = await SellOrder.aggregate([
     {
       $match: {
@@ -1331,9 +1349,39 @@ exports.getOrdersForWarehouseScan = async (warehouseIds = []) => {
         remainingQty: {
           $subtract: ["$warehouseAllocatedQty", "$warehouseScannedQty"],
         },
+        // Per-item breakdown scoped to this manager's warehouse(s) so the UI can
+        // show which articles (and how many) remain to dispatch on the order.
+        items: {
+          $map: {
+            input: { $ifNull: ["$items", []] },
+            as: "item",
+            in: {
+              productId: "$$item.productId",
+              categoryId: "$$item.categoryId",
+              articleCode: "$$item.articleCode",
+              image: "$$item.image",
+              quantity: itemScopedSum("quantity"),
+              scannedQty: itemScopedSum("scanqtyatdispatch"),
+            },
+          },
+        },
       },
     },
   ]);
+
+  // Drop items that are not allocated to this warehouse and compute per-item
+  // remaining qty.
+  orders.forEach((o) => {
+    o.items = (o.items || [])
+      .filter((it) => (it.quantity ?? 0) > 0)
+      .map((it) => ({
+        ...it,
+        remainingQty: (it.quantity ?? 0) - (it.scannedQty ?? 0),
+      }));
+  });
+
+  // Resolve article name / category details from productId + categoryId.
+  await enrichOrdersWithProductDetails(orders);
 
   return orders;
 };
