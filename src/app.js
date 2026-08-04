@@ -114,7 +114,7 @@ if (process.env.NODE_ENV === "development") {
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "ok",
-    service: "APEX Shoes Running Version-1v.0",
+    service: "APEX Shoes Running Version-1.0.0",
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
   });
