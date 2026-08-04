@@ -459,7 +459,6 @@ exports.AddOrdertoCart = async ({ customer, location, items, schemesId, createdB
 
   // 6️⃣ Process items
   const confirmedOrderItems = [];
-  const wishlistItems = [];
 
   for (const item of items) {
     // if (!item.quantity || typeof item.quantity !== "number" || item.quantity < 5) {
@@ -484,7 +483,15 @@ if (
   );
 }
 
-const productRecord = await Product.findOne({
+// A product variant is identified by the FULL combination:
+// article + categoryCode + color + size + type + quality. The same article
+// (e.g. MOZDI) can exist in more than one Product document, and each document
+// may carry a subdoc matching that combination. findOne() would grab an
+// arbitrary one, and if that copy has no warehouse/production stock the line
+// would wrongly look out of stock even though another copy holds the stock.
+// So resolve ALL matching (product, category) pairs and pick the one that
+// actually has stock in stockMap.
+const productRecords = await Product.find({
   article: item.article,
   category: {
     $elemMatch: {
@@ -497,28 +504,29 @@ const productRecord = await Product.findOne({
   }
 });
 
-let imageUrl = null;
-let dbarticleocode = null;
-let matchedCategoryId = null;
-if (productRecord && productRecord.category?.length > 0) {
-  // Find the exact category within the array (all six fields must match)
-  const matchedCategory = productRecord.category.find(cat =>
+// Collect every (product, category) pair whose full combination matches.
+const candidates = [];
+for (const product of productRecords) {
+  const matchedCategory = (product.category || []).find(cat =>
     cat.categoryCode === item.categoryCode &&
     cat.color?.toLowerCase() === item.color.toLowerCase() &&
     cat.size?.toLowerCase() === item.size.toLowerCase() &&
     (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase()) &&
     (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase())
   );
+  if (!matchedCategory) continue;
 
-  if (matchedCategory) {
-    imageUrl = matchedCategory.image[0];
-    dbarticleocode = matchedCategory.articleCode;
-    matchedCategoryId = matchedCategory._id;
-  }
+  const key = `${product._id}_${matchedCategory._id}`;
+  candidates.push({
+    product,
+    matchedCategory,
+    key,
+    availableQty: stockMap[key] ?? 0,
+  });
 }
 
 // Never create an order line with an unresolved / wrong variant.
-if (!matchedCategoryId) {
+if (candidates.length === 0) {
   throw new Error(
     `No matching product variant for article ${item.article}, ` +
       `categoryCode ${item.categoryCode}, color ${item.color}, size ${item.size}, ` +
@@ -526,22 +534,39 @@ if (!matchedCategoryId) {
   );
 }
 
+// Prefer the duplicate that can fulfil the requested quantity; otherwise the
+// one with the most stock (for an accurate "available" figure in the error).
+const chosen =
+  candidates.find(c => c.availableQty >= item.quantity && item.quantity > 0) ||
+  candidates.slice().sort((a, b) => b.availableQty - a.availableQty)[0];
+
+const { matchedCategory } = chosen;
+const productRecord = chosen.product;
+const matchedCategoryId = matchedCategory._id;
+const imageUrl = matchedCategory.image?.[0] || null;
+const dbarticleocode = matchedCategory.articleCode;
+const availableQty = chosen.availableQty;
+
+// No Wishlist fallback: if the requested quantity cannot be fulfilled from
+// available stock, reject the whole request with a product/quantity-specific
+// error so the sales person adjusts the order.
+if (!(availableQty > 0) || item.quantity > availableQty) {
+  throw new Error(
+    `Insufficient stock for ${item.article} ` +
+      `(${item.color}, ${item.size}, ${item.type} ${item.quality}): ` +
+      `requested ${item.quantity}, available ${availableQty}.`
+  );
+}
+
 const itemWithImage = {
   ...item,
-  productId: productRecord?._id,
+  productId: productRecord._id,
   categoryId: matchedCategoryId,
   articleCode: dbarticleocode,
   image: imageUrl ? [imageUrl] : [],
 };
 
-
-    const key = `${productRecord?._id}_${matchedCategoryId}`;
-    const availableQty = stockMap[key] ?? 0;
-    if (availableQty > 0 && item.quantity <= availableQty) {
-      confirmedOrderItems.push(itemWithImage);
-    } else {
-      wishlistItems.push(itemWithImage);
-    }
+    confirmedOrderItems.push(itemWithImage);
   }
 
   // 7️⃣ Create Cart entry
@@ -550,7 +575,6 @@ const itemWithImage = {
     customer: existingCustomer._id,
     Location: location,
     items: confirmedOrderItems,
-    WishList: wishlistItems,
     createdBy,
     isActive: true,
     note: note ? [{ text: note, by: "SALES_PERSON" }] : []
