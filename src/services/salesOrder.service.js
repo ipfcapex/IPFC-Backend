@@ -1500,23 +1500,31 @@ exports.getArticleNames = async () => {
    ============================================================ */
 exports.getArticleDetailsByName = async (articleName) => {
   try {
-    // Find the product matching the article name
-    const product = await Product.findOne({
-      article: { $regex: new RegExp(`^${articleName}$`, "i") },
-      isActive: true,
+    if (!articleName) {
+      return { success: false, message: "Article name is required" };
+    }
+
+    const cleanArticleName = String(articleName).trim();
+    const escapedArticleName = cleanArticleName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const articleRegex = new RegExp(`^\\s*${escapedArticleName}\\s*$`, "i");
+
+    // Find all products matching the article name
+    const products = await Product.find({
+      article: { $regex: articleRegex },
+      isActive: { $ne: false },
     }).lean();
 
-    if (!product) {
+    if (!products || products.length === 0) {
       return { success: false, message: "Article not found" };
     }
 
-    const productId = product._id;
+    const productIds = products.map(p => p._id);
 
-    // Aggregate warehouse stock for this product
+    // Aggregate warehouse stock for these products
     const stockAgg = await Stock.aggregate([
       { $match: { isActive: { $ne: false } } },
       { $unwind: "$stockdata" },
-      { $match: { "stockdata.productId": productId, "stockdata.dispatched": false } },
+      { $match: { "stockdata.productId": { $in: productIds }, "stockdata.dispatched": false } },
       {
         $group: {
           _id: "$stockdata.categoryId",
@@ -1525,9 +1533,9 @@ exports.getArticleDetailsByName = async (articleName) => {
       },
     ]);
 
-    // Aggregate production stock for this product
+    // Aggregate production stock for these products
     const prodAgg = await Production.aggregate([
-      { $match: { isActive: { $ne: false }, productId: productId } },
+      { $match: { isActive: { $ne: false }, productId: { $in: productIds } } },
       {
         $group: {
           _id: "$categoryId",
@@ -1543,7 +1551,7 @@ exports.getArticleDetailsByName = async (articleName) => {
       },
     ]);
 
-    // Aggregate order qty for this product
+    // Aggregate order qty for these products
     const orderAgg = await SellOrder.aggregate([
       {
         $match: {
@@ -1554,7 +1562,7 @@ exports.getArticleDetailsByName = async (articleName) => {
         },
       },
       { $unwind: "$items" },
-      { $match: { "items.productId": productId } },
+      { $match: { "items.productId": { $in: productIds } } },
       {
         $addFields: {
           itemQuantity: {
@@ -1584,11 +1592,11 @@ exports.getArticleDetailsByName = async (articleName) => {
       },
     ]);
 
-    // Aggregate cart qty for this product
+    // Aggregate cart qty for these products
     const cartAgg = await Cart.aggregate([
       { $match: { isActive: true } },
       { $unwind: { path: "$items" } },
-      { $match: { "items.productId": productId } },
+      { $match: { "items.productId": { $in: productIds } } },
       {
         $group: {
           _id: "$items.categoryId",
@@ -1597,7 +1605,7 @@ exports.getArticleDetailsByName = async (articleName) => {
       },
     ]);
 
-    // Aggregate wishlist qty for this product
+    // Aggregate wishlist qty for these products
     const wishlistAgg = await Wishlist.aggregate([
       {
         $match: {
@@ -1606,7 +1614,7 @@ exports.getArticleDetailsByName = async (articleName) => {
         },
       },
       { $unwind: "$WishList" },
-      { $match: { "WishList.productId": productId } },
+      { $match: { "WishList.productId": { $in: productIds } } },
       {
         $group: {
           _id: "$WishList.categoryId",
@@ -1617,51 +1625,59 @@ exports.getArticleDetailsByName = async (articleName) => {
 
     // Build lookup maps keyed by categoryId string
     const stockMap = {};
-    stockAgg.forEach(s => { stockMap[String(s._id)] = s.stockQty || 0; });
+    stockAgg.forEach(s => { if (s._id) stockMap[String(s._id)] = (stockMap[String(s._id)] || 0) + (s.stockQty || 0); });
     const prodMap = {};
-    prodAgg.forEach(p => { prodMap[String(p._id)] = p.productionQty || 0; });
+    prodAgg.forEach(p => { if (p._id) prodMap[String(p._id)] = (prodMap[String(p._id)] || 0) + (p.productionQty || 0); });
     const orderMap = {};
-    orderAgg.forEach(o => { orderMap[String(o._id)] = o.orderQty || 0; });
+    orderAgg.forEach(o => { if (o._id) orderMap[String(o._id)] = (orderMap[String(o._id)] || 0) + (o.orderQty || 0); });
     const cartMap = {};
-    cartAgg.forEach(c => { cartMap[String(c._id)] = c.cartQty || 0; });
+    cartAgg.forEach(c => { if (c._id) cartMap[String(c._id)] = (cartMap[String(c._id)] || 0) + (c.cartQty || 0); });
     const wishlistMap = {};
-    wishlistAgg.forEach(w => { wishlistMap[String(w._id)] = w.wishlistQty || 0; });
+    wishlistAgg.forEach(w => { if (w._id) wishlistMap[String(w._id)] = (wishlistMap[String(w._id)] || 0) + (w.wishlistQty || 0); });
 
-    // Build response with one row per active category variant
-    const variants = (product.category || [])
-      .filter(cat => cat.isActive !== false)
-      .map(cat => {
-        const catId = String(cat._id);
-        const stockQty = stockMap[catId] || 0;
-        const productionQty = prodMap[catId] || 0;
-        const orderQty = orderMap[catId] || 0;
-        const cartQty = cartMap[catId] || 0;
-        const wishlistQty = wishlistMap[catId] || 0;
-        const total = Math.max(stockQty + productionQty - orderQty - cartQty - wishlistQty, 0);
+    // Build response with all active category variants from all matched products
+    const seenCategoryIds = new Set();
+    const variants = [];
 
-        return {
-          categoryId: cat._id,
-          categoryCode: cat.categoryCode,
-          size: cat.size,
-          color: cat.color,
-          type: Array.isArray(cat.type) ? cat.type.join(", ") : (cat.type || ""),
-          quality: Array.isArray(cat.quality) ? cat.quality.join(", ") : (cat.quality || ""),
-          articleCode: cat.articleCode || "",
-          image: cat.image || [],
-          Warehouse_Qty: stockQty,
-          Production_Qty: productionQty,
-          Order_Qty: orderQty,
-          Cart_Qty: cartQty,
-          Wishlist_Qty: wishlistQty,
-          Total_Available: total,
-        };
-      });
+    products.forEach(productDoc => {
+      (productDoc.category || [])
+        .filter(cat => cat && cat.isActive !== false)
+        .forEach(cat => {
+          const catId = String(cat._id);
+          if (seenCategoryIds.has(catId)) return;
+          seenCategoryIds.add(catId);
+
+          const stockQty = stockMap[catId] || 0;
+          const productionQty = prodMap[catId] || 0;
+          const orderQty = orderMap[catId] || 0;
+          const cartQty = cartMap[catId] || 0;
+          const wishlistQty = wishlistMap[catId] || 0;
+          const total = Math.max(stockQty + productionQty - orderQty - cartQty - wishlistQty, 0);
+
+          variants.push({
+            categoryId: cat._id,
+            categoryCode: cat.categoryCode,
+            size: cat.size,
+            color: cat.color,
+            type: Array.isArray(cat.type) ? cat.type.join(", ") : (cat.type || ""),
+            quality: Array.isArray(cat.quality) ? cat.quality.join(", ") : (cat.quality || ""),
+            articleCode: cat.articleCode || "",
+            image: cat.image || [],
+            Warehouse_Qty: stockQty,
+            Production_Qty: productionQty,
+            Order_Qty: orderQty,
+            Cart_Qty: cartQty,
+            Wishlist_Qty: wishlistQty,
+            Total_Available: total,
+          });
+        });
+    });
 
     return {
       success: true,
       data: {
-        articleName: product.article,
-        productId: product._id,
+        articleName: products[0].article,
+        productId: products[0]._id,
         variants,
       },
     };
