@@ -2,11 +2,11 @@ const cron = require("node-cron");
 const { Wishlist } = require("../models");
 const wishlistService = require("./wishlist.service");
 
-// Same 12h window the old TTL index used (43200s). If a wishlist is neither
-// Accepted nor Rejected within 12h of stock being applied (wishlistStockTime),
+// Same 15h window. If a wishlist is neither
+// Accepted nor Rejected within 15h of stock being applied (wishlistStockTime),
 // it is archived to WishlistHistory as a "Timeout" instead of being silently
 // deleted.
-const TIMEOUT_MS = 12 * 60 * 60 * 1000;
+const TIMEOUT_MS = 15 * 60 * 60 * 1000;
 
 // The wishlist collection used to carry a TTL index
 // { wishlistStockTime: 1 }, { expireAfterSeconds: 43200 } that DELETED documents
@@ -43,7 +43,7 @@ const runWishlistTimeoutJob = async () => {
     const cutoff = new Date(Date.now() - TIMEOUT_MS);
 
     // Only pending wishlists live in this collection, so any with stock applied
-    // more than 12h ago that are still here have timed out.
+    // more than 15h ago that are still here have timed out.
     const expired = await Wishlist.find({
       wishlistStockTime: { $ne: null, $lte: cutoff },
     });
