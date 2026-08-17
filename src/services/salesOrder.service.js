@@ -79,7 +79,7 @@ async function enrichOrdersWithProductDetails(orders) {
 }
 exports.enrichOrdersWithProductDetails = enrichOrdersWithProductDetails;
 
-exports.getAggregatedStock = async (page = 1, limit = 10, search = "", excludeWishlistId = null) => {
+exports.getAggregatedStock = async (page = 1, limit = 10, search = "", excludeWishlistId = null, groupByArticle = false) => {
   const skip = (page - 1) * limit;
 
   /* ===============================
@@ -310,9 +310,36 @@ const wishlistAgg = await Wishlist.aggregate([
     };
   });
 
+  let finalResult = result;
+
+  if (groupByArticle === 'true' || groupByArticle === true) {
+    const grouped = {};
+    for (const r of result) {
+      if (!grouped[r.article]) {
+        grouped[r.article] = {
+          article: r.article,
+          Warehouse_Qty: 0,
+          Production_Qty: 0,
+          Order_Qty: 0,
+          Cart_Qty: 0,
+          Wishlist_Qty: 0,
+          Total_Available: 0,
+          image: r.image
+        };
+      }
+      grouped[r.article].Warehouse_Qty += r.Warehouse_Qty || 0;
+      grouped[r.article].Production_Qty += r.Production_Qty || 0;
+      grouped[r.article].Order_Qty += r.Order_Qty || 0;
+      grouped[r.article].Cart_Qty += r.Cart_Qty || 0;
+      grouped[r.article].Wishlist_Qty += r.Wishlist_Qty || 0;
+      grouped[r.article].Total_Available += r.Total_Available || 0;
+    }
+    finalResult = Object.values(grouped);
+  }
+
   const filtered = search
-    ? result.filter(r => Object.values(r).some(v => new RegExp(search, "i").test(String(v))))
-    : result;
+    ? finalResult.filter(r => Object.values(r).some(v => new RegExp(search, "i").test(String(v))))
+    : finalResult;
 
   filtered.sort((a, b) => b.Total_Available - a.Total_Available);
 

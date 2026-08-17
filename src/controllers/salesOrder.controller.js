@@ -12,8 +12,9 @@ exports.getAggregatedStocks = async (req, res) => {
     // Optional: when the order is created from a wishlist, exclude that
     // wishlist's own reserved qty from the availability calculation.
     const excludeWishlistId = req.query.excludeWishlistId?.trim() || null;
+    const groupByArticle = req.query.groupByArticle === 'true';
 
-    const aggregatedStock = await orderService.getAggregatedStock(page, limit, search, excludeWishlistId);
+    const aggregatedStock = await orderService.getAggregatedStock(page, limit, search, excludeWishlistId, groupByArticle);
 
     return res.status(200).json({
       success: true,
