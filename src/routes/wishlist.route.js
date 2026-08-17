@@ -6,6 +6,8 @@ const { requireAuth, requireAdminRoles } = require('../middleware/auth.authoriza
 
 router.post('/add',WishlistController.addWishlist);
 router.get('/all', WishlistController.getAllWishlist);
+// Get rating / analytics for admin & administrator
+router.get('/rating', requireAuth, requireAdminRoles('Admin', 'Administrator'), WishlistController.getWishlistRating);
 //get wishlist for sales person
 router.get("/get/bysalesperson",requireAuth, requireAdminRoles('Sales Person'), WishlistController.getWishlistBySalesperson);
 router.get('/:id', WishlistController.getWishlistById);

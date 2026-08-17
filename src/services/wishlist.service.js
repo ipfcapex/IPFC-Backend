@@ -540,3 +540,275 @@ exports.softDeleteWishlistById = async (id) => {
 // Export the helper so the controller (which has its own inline query for the
 // salesperson view) can apply the same computed status logic.
 exports.computeActiveWishlistStatus = computeActiveWishlistStatus;
+
+/**
+ * Aggregates wishlist data across active and history collections to generate
+ * performance ratings and metrics grouped by salesperson and customer.
+ */
+exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, customerId } = {}) => {
+  const activeQuery = { isActive: true };
+  if (salespersonId) activeQuery.createdBy = salespersonId;
+  if (customerId) activeQuery.customer = customerId;
+  if (startDate || endDate) {
+    activeQuery.createdAt = {};
+    if (startDate) activeQuery.createdAt.$gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      activeQuery.createdAt.$lte = end;
+    }
+  }
+
+  const historyQuery = {};
+  if (salespersonId) historyQuery.createdBy = salespersonId;
+  if (customerId) historyQuery.customer = customerId;
+  if (startDate || endDate) {
+    const dateRange = {};
+    if (startDate) dateRange.$gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateRange.$lte = end;
+    }
+    historyQuery.$or = [
+      { originalCreatedAt: dateRange },
+      { actionAt: dateRange },
+      { createdAt: dateRange },
+    ];
+  }
+
+  const [activeDocs, historyDocs] = await Promise.all([
+    Wishlist.find(activeQuery)
+      .populate("customer", "name email phone location")
+      .populate("createdBy", "name email role")
+      .lean(),
+    WishlistHistory.find(historyQuery)
+      .populate("customer", "name email phone location")
+      .populate("createdBy", "name email role")
+      .lean(),
+  ]);
+
+  // Combine all wishlist documents
+  const allDocs = [
+    ...activeDocs.map((d) => ({ ...d, _isAccepted: false })),
+    ...historyDocs.map((d) => ({ ...d, _isAccepted: d.wishAction === "Accepted" })),
+  ];
+
+  const salespersonMap = new Map();
+  const customerMap = new Map();
+  const detailMap = new Map();
+
+  let overallTotalWishlistQty = 0;
+  let overallAcceptedQty = 0;
+  let overallWishlistCount = allDocs.length;
+  let overallAcceptedCount = 0;
+
+  for (const doc of allDocs) {
+    const sId = doc.createdBy?._id ? String(doc.createdBy._id) : "unassigned";
+    const sName = doc.createdBy?.name || "Unassigned";
+    const sEmail = doc.createdBy?.email || "";
+
+    const cId = doc.customer?._id ? String(doc.customer._id) : "unknown";
+    const cName = doc.customer?.name || "Unknown Customer";
+    const cPhone = doc.customer?.phone || "";
+
+    const qty = (doc.WishList || []).reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
+    const isAccepted = Boolean(doc._isAccepted);
+    const accQty = isAccepted ? qty : 0;
+
+    overallTotalWishlistQty += qty;
+    overallAcceptedQty += accQty;
+    if (isAccepted) overallAcceptedCount += 1;
+
+    // 1. Detailed map (salesperson + customer)
+    const detailKey = `${sId}___${cId}`;
+    if (!detailMap.has(detailKey)) {
+      detailMap.set(detailKey, {
+        salespersonId: sId,
+        salespersonName: sName,
+        salespersonEmail: sEmail,
+        customerId: cId,
+        customerName: cName,
+        customerPhone: cPhone,
+        totalWishlistQty: 0,
+        acceptedQty: 0,
+        wishlistCount: 0,
+        acceptedCount: 0,
+      });
+    }
+    const detailItem = detailMap.get(detailKey);
+    detailItem.totalWishlistQty += qty;
+    detailItem.acceptedQty += accQty;
+    detailItem.wishlistCount += 1;
+    if (isAccepted) detailItem.acceptedCount += 1;
+
+    // 2. Salesperson map
+    if (!salespersonMap.has(sId)) {
+      salespersonMap.set(sId, {
+        salespersonId: sId,
+        salespersonName: sName,
+        salespersonEmail: sEmail,
+        totalWishlistQty: 0,
+        acceptedQty: 0,
+        wishlistCount: 0,
+        acceptedCount: 0,
+        customerMap: new Map(),
+      });
+    }
+    const sItem = salespersonMap.get(sId);
+    sItem.totalWishlistQty += qty;
+    sItem.acceptedQty += accQty;
+    sItem.wishlistCount += 1;
+    if (isAccepted) sItem.acceptedCount += 1;
+    if (!sItem.customerMap.has(cId)) {
+      sItem.customerMap.set(cId, {
+        customerId: cId,
+        customerName: cName,
+        customerPhone: cPhone,
+        totalWishlistQty: 0,
+        acceptedQty: 0,
+        wishlistCount: 0,
+        acceptedCount: 0,
+      });
+    }
+    const sCustItem = sItem.customerMap.get(cId);
+    sCustItem.totalWishlistQty += qty;
+    sCustItem.acceptedQty += accQty;
+    sCustItem.wishlistCount += 1;
+    if (isAccepted) sCustItem.acceptedCount += 1;
+
+    // 3. Customer map
+    if (!customerMap.has(cId)) {
+      customerMap.set(cId, {
+        customerId: cId,
+        customerName: cName,
+        customerPhone: cPhone,
+        totalWishlistQty: 0,
+        acceptedQty: 0,
+        wishlistCount: 0,
+        acceptedCount: 0,
+        salespersonMap: new Map(),
+      });
+    }
+    const cItem = customerMap.get(cId);
+    cItem.totalWishlistQty += qty;
+    cItem.acceptedQty += accQty;
+    cItem.wishlistCount += 1;
+    if (isAccepted) cItem.acceptedCount += 1;
+    if (!cItem.salespersonMap.has(sId)) {
+      cItem.salespersonMap.set(sId, {
+        salespersonId: sId,
+        salespersonName: sName,
+        salespersonEmail: sEmail,
+        totalWishlistQty: 0,
+        acceptedQty: 0,
+        wishlistCount: 0,
+        acceptedCount: 0,
+      });
+    }
+    const cSalesItem = cItem.salespersonMap.get(sId);
+    cSalesItem.totalWishlistQty += qty;
+    cSalesItem.acceptedQty += accQty;
+    cSalesItem.wishlistCount += 1;
+    if (isAccepted) cSalesItem.acceptedCount += 1;
+  }
+
+  // Format salesperson summary
+  let salespersonSummary = Array.from(salespersonMap.values()).map((s) => {
+    const rate = s.totalWishlistQty > 0 ? Number(((s.acceptedQty / s.totalWishlistQty) * 100).toFixed(2)) : 0;
+    const customers = Array.from(s.customerMap.values()).map((c) => {
+      const cRate = c.totalWishlistQty > 0 ? Number(((c.acceptedQty / c.totalWishlistQty) * 100).toFixed(2)) : 0;
+      return {
+        ...c,
+        acceptanceRate: cRate,
+      };
+    }).sort((a, b) => b.totalWishlistQty - a.totalWishlistQty);
+
+    return {
+      salespersonId: s.salespersonId,
+      salespersonName: s.salespersonName,
+      salespersonEmail: s.salespersonEmail,
+      totalWishlistQty: s.totalWishlistQty,
+      acceptedQty: s.acceptedQty,
+      acceptanceRate: rate,
+      wishlistCount: s.wishlistCount,
+      acceptedCount: s.acceptedCount,
+      customersCount: customers.length,
+      customers,
+    };
+  }).sort((a, b) => b.totalWishlistQty - a.totalWishlistQty);
+
+  // Format customer summary
+  let customerSummary = Array.from(customerMap.values()).map((c) => {
+    const rate = c.totalWishlistQty > 0 ? Number(((c.acceptedQty / c.totalWishlistQty) * 100).toFixed(2)) : 0;
+    const salespersons = Array.from(c.salespersonMap.values()).map((s) => {
+      const sRate = s.totalWishlistQty > 0 ? Number(((s.acceptedQty / s.totalWishlistQty) * 100).toFixed(2)) : 0;
+      return {
+        ...s,
+        acceptanceRate: sRate,
+      };
+    }).sort((a, b) => b.totalWishlistQty - a.totalWishlistQty);
+
+    return {
+      customerId: c.customerId,
+      customerName: c.customerName,
+      customerPhone: c.customerPhone,
+      totalWishlistQty: c.totalWishlistQty,
+      acceptedQty: c.acceptedQty,
+      acceptanceRate: rate,
+      wishlistCount: c.wishlistCount,
+      acceptedCount: c.acceptedCount,
+      salespersonsCount: salespersons.length,
+      salespersons,
+    };
+  }).sort((a, b) => b.totalWishlistQty - a.totalWishlistQty);
+
+  // Format detail breakdown
+  let detailedBreakdown = Array.from(detailMap.values()).map((d) => {
+    const rate = d.totalWishlistQty > 0 ? Number(((d.acceptedQty / d.totalWishlistQty) * 100).toFixed(2)) : 0;
+    return {
+      ...d,
+      acceptanceRate: rate,
+    };
+  }).sort((a, b) => b.totalWishlistQty - a.totalWishlistQty);
+
+  // Apply search query filter if provided
+  if (search && search.trim() !== "") {
+    const q = search.trim().toLowerCase();
+    detailedBreakdown = detailedBreakdown.filter(
+      (d) =>
+        d.salespersonName.toLowerCase().includes(q) ||
+        d.customerName.toLowerCase().includes(q)
+    );
+    salespersonSummary = salespersonSummary.filter(
+      (s) =>
+        s.salespersonName.toLowerCase().includes(q) ||
+        s.customers.some((c) => c.customerName.toLowerCase().includes(q))
+    );
+    customerSummary = customerSummary.filter(
+      (c) =>
+        c.customerName.toLowerCase().includes(q) ||
+        c.salespersons.some((s) => s.salespersonName.toLowerCase().includes(q))
+    );
+  }
+
+  const overallAcceptanceRate =
+    overallTotalWishlistQty > 0
+      ? Number(((overallAcceptedQty / overallTotalWishlistQty) * 100).toFixed(2))
+      : 0;
+
+  return {
+    overall: {
+      totalWishlistQty: overallTotalWishlistQty,
+      acceptedQty: overallAcceptedQty,
+      acceptanceRate: overallAcceptanceRate,
+      totalSalespersons: salespersonMap.size,
+      totalCustomers: customerMap.size,
+      totalWishlists: overallWishlistCount,
+      acceptedWishlists: overallAcceptedCount,
+    },
+    salespersonSummary,
+    customerSummary,
+    detailedBreakdown,
+  };
+};

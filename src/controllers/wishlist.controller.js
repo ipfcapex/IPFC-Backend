@@ -293,3 +293,29 @@ exports.softDeleteWishlistById = async (req, res) => {
     });
   }
 };
+
+exports.getWishlistRating = async (req, res) => {
+  try {
+    const { startDate, endDate, search, salespersonId, customerId } = req.query;
+
+    const data = await WishlistService.getWishlistRating({
+      startDate,
+      endDate,
+      search,
+      salespersonId,
+      customerId,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Wishlist rating analytics fetched successfully",
+      data,
+    });
+  } catch (error) {
+    console.error("Wishlist Rating Error:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to fetch wishlist rating",
+    });
+  }
+};

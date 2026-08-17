@@ -3,33 +3,45 @@ const mongoose = require("mongoose");
 const { sendNotification } = require("./notificationService");
 
 exports.updateLastNoteService = async (id, text, approvalStatus) => {
-  const order = await SellOrder.findById({_id: id}); 
+  const order = await SellOrder.findById(id)
+    .populate("createdBy", "name email")
+    .populate("customer", "name"); 
 
   if (!order) throw new Error("Order not found");
-      let canApprove = true;
 
   const newNote = {
-      text:text,
-      by: "ACCOUNT_MANAGER"
-    };
+    text: text,
+    by: "ACCOUNT_MANAGER"
+  };
+
   // If no notes, add one
   if (!order.note || order.note.length === 0) {
-    order.note = newNote;
-     order.accountSectionApproval = approvalStatus
-     
+    order.note = [newNote];
   } else {
     // Update the last note
     const lastIndex = order.note.length - 1;
     order.note[lastIndex] = newNote;
-    order.accountSectionApproval = approvalStatus;
   }
+  order.accountSectionApproval = approvalStatus;
 
+  await order.save();
+
+  const createdById = order.createdBy?._id
+    ? String(order.createdBy._id)
+    : order.createdBy
+    ? String(order.createdBy)
+    : null;
+  const createdByName = order.createdBy?.name || null;
+  const customerName = order.customer?.name || null;
 
   // 🔔 Send notifications based on approvalStatus
-  let notifications = []
+  let notifications = [];
   if (approvalStatus.toUpperCase() === "APPROVED") {
     const approveNotification = {
-      message: `Order ${order.salesOrderNo} Approved successfully by Account Section, Please review.`,
+      message: `Order ${order.salesOrderNo}${customerName ? ` for ${customerName}` : ""} was Approved by Account Section.`,
+      createdById,
+      createdByName,
+      salesOrderNo: order.salesOrderNo,
       data: order,
     };
     sendNotification("AccountSectionApproval", approveNotification);
@@ -39,7 +51,10 @@ exports.updateLastNoteService = async (id, text, approvalStatus) => {
 
   if (approvalStatus.toUpperCase() === "REJECTED") {
     const rejectNotification = {
-      message: `Order ${order.salesOrderNo} Rejected by Account Section, Please review.`,
+      message: `Order ${order.salesOrderNo}${customerName ? ` for ${customerName}` : ""} was Rejected by Account Section.${text ? ` Note: "${text}"` : ""}`,
+      createdById,
+      createdByName,
+      salesOrderNo: order.salesOrderNo,
       data: order,
     };
     sendNotification("AccountSectionRejection", rejectNotification);
@@ -47,15 +62,8 @@ exports.updateLastNoteService = async (id, text, approvalStatus) => {
     notifications.push(rejectNotification);
   }
 
-    
-    // Update approval status
-    // order. = canApprove ? "APPROVED" : "REJECTED";
-    order.note[0] = newNote
-  console.log("order",Order);
-
-  await order.save();
-
-  return {order, notifications};
+  return { order, notifications };
 };
+
 
 
