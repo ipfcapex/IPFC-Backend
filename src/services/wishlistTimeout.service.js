@@ -64,6 +64,35 @@ const runWishlistTimeoutJob = async () => {
     if (archived > 0) {
       console.log(`Wishlist timeout job: ${archived} wishlist(s) archived as Timeout`);
     }
+
+    // --- 1-year expiry sweep ---
+    // Wishlists where the requested article was never prepared
+    // (wishlistStockTime is still null) and the wishlist is older than 1 year
+    // from its creation date are archived as "Expired".
+    const oneYearAgo = new Date();
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+
+    const expiredUnfulfilled = await Wishlist.find({
+      wishlistStockTime: null,
+      createdAt: { $lte: oneYearAgo },
+    });
+
+    let expiredCount = 0;
+    for (const wishlist of expiredUnfulfilled) {
+      try {
+        await wishlistService.archiveWishlist(wishlist, "Expired");
+        expiredCount += 1;
+      } catch (err) {
+        console.error(
+          `Failed to archive expired wishlist ${wishlist._id}:`,
+          err.message
+        );
+      }
+    }
+
+    if (expiredCount > 0) {
+      console.log(`Wishlist timeout job: ${expiredCount} wishlist(s) archived as Expired`);
+    }
   } catch (error) {
     console.error("Wishlist timeout cron failed:", error.message);
   }

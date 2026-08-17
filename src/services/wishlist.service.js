@@ -3,6 +3,23 @@ const mongoose = require("mongoose");
 const { enrichOrdersWithProductDetails } = require("./salesOrder.service");
 const { sendNotification } = require("./notificationService");
 
+// Compute a virtual status for active (non-archived) wishlists based on
+// whether the requested article has been prepared (wishlistStockTime set)
+// and how old the wishlist is. Returns null when the existing countdown /
+// Accept / Reject flow should apply (stock time is set), "Not Fulfilled"
+// when the article was never prepared, or "Expired" when it has been
+// unfulfilled for >= 1 year.
+const computeActiveWishlistStatus = (wishlist) => {
+  // Article was prepared (stock time applied) — existing flow handles this
+  if (wishlist.wishlistStockTime) return null;
+
+  const createdAt = new Date(wishlist.originalCreatedAt || wishlist.createdAt);
+  const oneYearAgo = new Date();
+  oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+
+  return createdAt <= oneYearAgo ? 'Expired' : 'Not Fulfilled';
+};
+
 /**
  * Add items to wishlist
  * @param {string} customer - Customer name
@@ -193,7 +210,7 @@ exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "") => 
   const activeTagged = activeDocs.map((d) => ({
     ...d,
     isHistory: false,
-    wishAction: null,
+    wishAction: computeActiveWishlistStatus(d),
     _sortDate: d.updatedAt || d.createdAt,
   }));
   const historyTagged = historyDocs.map((d) => ({
@@ -288,6 +305,9 @@ exports.getWishlistById = async (id) => {
       .populate("scheme", "name")
       .lean();
     if (wishlist) wishlist.isHistory = true;
+  } else {
+    // Active wishlist: compute virtual status for Not Fulfilled / Expired
+    wishlist.wishAction = computeActiveWishlistStatus(wishlist);
   }
 
   if (!wishlist) throw new Error("Wishlist not found");
@@ -516,3 +536,7 @@ exports.softDeleteWishlistById = async (id) => {
 
   return await exports.archiveWishlist(wishlist, "Rejected");
 };
+
+// Export the helper so the controller (which has its own inline query for the
+// salesperson view) can apply the same computed status logic.
+exports.computeActiveWishlistStatus = computeActiveWishlistStatus;

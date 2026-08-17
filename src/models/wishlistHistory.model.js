@@ -42,7 +42,7 @@ const wishlistHistorySchema = new mongoose.Schema(
     // How the wishlist ended up here.
     wishAction: {
       type: String,
-      enum: ["Accepted", "Rejected", "Timeout"],
+      enum: ["Accepted", "Rejected", "Timeout", "Not Fulfilled", "Expired"],
       required: true,
     },
     // When the action happened.

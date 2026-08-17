@@ -1,4 +1,5 @@
 const { WishlistService } = require('../services'); // your service function
+const { computeActiveWishlistStatus } = require('../services/wishlist.service');
 const { Customer, Product, Wishlist, Schemes, WishlistHistory } = require("../models");
 const mongoose = require("mongoose");
 const { enrichOrdersWithProductDetails } = require("../services/salesOrder.service");
@@ -163,7 +164,7 @@ exports.getWishlistBySalesperson = async (req, res) => {
     const activeTagged = activeDocs.map((d) => ({
       ...d,
       isHistory: false,
-      wishAction: null,
+      wishAction: computeActiveWishlistStatus(d),
       _sortDate: d.updatedAt || d.createdAt,
     }));
     const historyTagged = historyDocs.map((d) => ({
