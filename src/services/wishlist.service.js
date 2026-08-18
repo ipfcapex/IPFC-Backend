@@ -154,10 +154,26 @@ exports.AddToWishlist = async ({
     .populate("scheme");
 };
 
-exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "") => {
+exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "", extra = {}) => {
   const pageNum = parseInt(page, 10) || 1;
   const limitNum = parseInt(limit, 10) || 10;
   const skip = (pageNum - 1) * limitNum;
+
+  const { article, salesperson, status } = extra;
+
+  // Article filter: the article name lives on the Product, while wishlists only
+  // store productId. Resolve the matching products first, then constrain both
+  // collections to wishlists that reference one of them.
+  let articleProductIds = null;
+  if (article && article.trim() !== "") {
+    const arx = new RegExp(article.trim(), "i");
+    const products = await Product.find({ article: arx }).select("_id").lean();
+    articleProductIds = products.map((p) => p._id);
+  }
+
+  // Salesperson filter: createdBy id (only apply when it's a valid ObjectId).
+  const salespersonId =
+    salesperson && mongoose.Types.ObjectId.isValid(salesperson) ? salesperson : null;
 
   // Single search input: matches the wishlist description, the embedded
   // Location snapshot, and the customer's live name / city / state. Location can
@@ -184,6 +200,8 @@ exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "") => 
   // Active (pending) wishlists.
   const activeQuery = { isActive: true, ...filter };
   if (searchOr) activeQuery.$or = searchOr;
+  if (salespersonId) activeQuery.createdBy = salespersonId;
+  if (articleProductIds) activeQuery["WishList.productId"] = { $in: articleProductIds };
 
   // Archived wishlists (accepted / rejected / timeout). Reuse the same customer
   // filter; the incoming date filter is on createdAt, so remap it to actionAt
@@ -192,6 +210,8 @@ exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "") => 
   if (filter.customer) historyQuery.customer = filter.customer;
   if (filter.createdAt) historyQuery.actionAt = filter.createdAt;
   if (searchOr) historyQuery.$or = searchOr;
+  if (salespersonId) historyQuery.createdBy = salespersonId;
+  if (articleProductIds) historyQuery["WishList.productId"] = { $in: articleProductIds };
 
   const [activeDocs, historyDocs] = await Promise.all([
     Wishlist.find(activeQuery)
@@ -219,9 +239,17 @@ exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "") => 
     _sortDate: d.actionAt || d.updatedAt || d.createdAt,
   }));
 
-  const combined = [...activeTagged, ...historyTagged].sort(
+  let combined = [...activeTagged, ...historyTagged].sort(
     (a, b) => new Date(b._sortDate) - new Date(a._sortDate)
   );
+
+  // "Stock Time" status filter. Status is a computed value (not a stored field),
+  // so it is applied here after both collections are tagged and merged. Active
+  // wishlists whose stock time is set (wishAction null) count as "Pending".
+  if (status && status.trim() !== "") {
+    const wanted = status.trim();
+    combined = combined.filter((d) => (d.wishAction || "Pending") === wanted);
+  }
 
   const totalItems = combined.length;
   const totalPages = Math.ceil(totalItems / limitNum) || 1;
