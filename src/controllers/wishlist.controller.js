@@ -273,9 +273,13 @@ exports.updateWishlistById = async (req, res) => {
 exports.completeWishlist = async (req, res) => {
   try {
     const { id } = req.params;
-    const { schemesId } = req.body || {};
+    const { schemesId, acceptedQuantities, partialOrderReason } = req.body || {};
 
-    const { order, history } = await WishlistService.findandmarkdone(id, schemesId);
+    const { order, history } = await WishlistService.findandmarkdone(id, {
+      schemesId,
+      acceptedQuantities,
+      partialOrderReason,
+    });
 
     return res.status(200).json({
       order,
@@ -343,6 +347,29 @@ exports.getWishlistRating = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: error.message || "Failed to fetch wishlist rating",
+    });
+  }
+};
+
+exports.getWishlistAnalytics = async (req, res) => {
+  try {
+    const { financialYear, month } = req.query;
+
+    const data = await WishlistService.getWishlistAnalytics({
+      financialYear,
+      month,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Wishlist analytics fetched successfully",
+      data,
+    });
+  } catch (error) {
+    console.error("Wishlist Analytics Error:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to fetch wishlist analytics",
     });
   }
 };

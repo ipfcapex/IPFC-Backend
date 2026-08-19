@@ -50,6 +50,25 @@ const wishlistHistorySchema = new mongoose.Schema(
     // Preserve the original document's timestamps for reporting.
     originalCreatedAt: { type: Date },
     originalUpdatedAt: { type: Date },
+
+    // --- partial order metadata ---
+    // Total quantity originally requested across all items.
+    requestedQuantity: { type: Number, default: 0 },
+    // Quantity that was accepted / ordered.
+    acceptedQuantity: { type: Number, default: 0 },
+    // Quantity remaining after partial fulfillment.
+    remainingQuantity: { type: Number, default: 0 },
+    // Whether the order placed was partial (acceptedQty < requestedQty).
+    isPartialOrder: { type: Boolean, default: false },
+    // Mandatory reason when partial. Null / absent for full orders.
+    partialOrderReason: {
+      type: String,
+      default: null,
+    },
+    // When the order was created from this wishlist (for waiting-time calc).
+    fulfillmentDate: { type: Date, default: null },
+    // Pre-computed waiting time in days (creation → fulfillment).
+    waitingTimeDays: { type: Number, default: null },
   },
   {
     timestamps: true,
