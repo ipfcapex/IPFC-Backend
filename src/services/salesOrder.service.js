@@ -1713,3 +1713,389 @@ exports.getArticleDetailsByName = async (articleName) => {
     return { success: false, message: "Failed to fetch article details", error: error.message };
   }
 };
+
+/**
+ * Review List – Carton Quantity Verification (Factory -> Warehouse)
+ * Reconciles carton quantities by Production Number (PN Number) generated at Factory
+ * comparing Total Cartons Produced vs Factory Dispatched vs Warehouse Received.
+ */
+exports.getReviewListOrders = async ({
+  page = 1,
+  limit = 10,
+  search = "",
+  startDate = "",
+  endDate = "",
+  status = "ALL",
+  type = "",
+} = {}) => {
+  try {
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = parseInt(limit, 10) || 10;
+    const skip = (pageNum - 1) * limitNum;
+
+    // 1️⃣ Match stage for QRCODE collection
+    const qrMatch = {};
+    if (type === "RPN") {
+      qrMatch.productionNo = { $regex: "^RPN_", $options: "i" };
+    } else if (type === "PN") {
+      qrMatch.productionNo = { $regex: "^PN_", $options: "i" };
+    }
+
+    if (startDate || endDate) {
+      qrMatch.createdAt = {};
+      if (startDate) qrMatch.createdAt.$gte = new Date(`${startDate}T00:00:00.000Z`);
+      if (endDate) qrMatch.createdAt.$lte = new Date(`${endDate}T23:59:59.999Z`);
+    }
+
+    // 2️⃣ Aggregate QRCODE documents grouped by productionNo
+    const qrAgg = await QRCODE.aggregate([
+      { $match: qrMatch },
+      { $unwind: "$qrCodes" },
+      {
+        $group: {
+          _id: {
+            productionNo: "$productionNo",
+            productId: "$qrCodes.productId",
+            categoryId: "$qrCodes.categoryId",
+          },
+          productionNo: { $first: "$productionNo" },
+          factory: { $first: "$factory" },
+          warehouse: { $first: "$warehouse" },
+          firstCreatedAt: { $min: "$createdAt" },
+          totalCartons: { $sum: 1 },
+          factoryDispatchedCartons: {
+            $sum: {
+              $cond: [{ $eq: ["$qrCodes.factoryScan", true] }, 1, 0],
+            },
+          },
+          warehouseReceivedCartons: {
+            $sum: {
+              $cond: [{ $eq: ["$qrCodes.warehouseinScan", true] }, 1, 0],
+            },
+          },
+          warehouseDispatchedCartons: {
+            $sum: {
+              $cond: [{ $eq: ["$qrCodes.warehouseDispatch", true] }, 1, 0],
+            },
+          },
+          qrSample: {
+            $push: {
+              qrId: "$qrCodes.qrId",
+              factoryScan: "$qrCodes.factoryScan",
+              warehouseinScan: "$qrCodes.warehouseinScan",
+              warehouseDispatch: "$qrCodes.warehouseDispatch",
+              ordNumScanFor: "$qrCodes.ordNumScanFor",
+            },
+          },
+        },
+      },
+    ]);
+
+    // Group the aggregated data by productionNo
+    const pnMap = {};
+    const productIdsSet = new Set();
+
+    qrAgg.forEach((entry) => {
+      const pn = entry.productionNo;
+      if (!pn) return;
+
+      if (!pnMap[pn]) {
+        pnMap[pn] = {
+          productionNo: pn,
+          factory: entry.factory,
+          warehouses: new Set(),
+          createdAt: entry.firstCreatedAt,
+          totalCartons: 0,
+          factoryDispatchedCartons: 0,
+          warehouseReceivedCartons: 0,
+          warehouseDispatchedCartons: 0,
+          items: [],
+        };
+      }
+
+      if (entry.warehouse) {
+        pnMap[pn].warehouses.add(String(entry.warehouse));
+      }
+
+      pnMap[pn].totalCartons += entry.totalCartons || 0;
+      pnMap[pn].factoryDispatchedCartons += entry.factoryDispatchedCartons || 0;
+      pnMap[pn].warehouseReceivedCartons += entry.warehouseReceivedCartons || 0;
+      pnMap[pn].warehouseDispatchedCartons += entry.warehouseDispatchedCartons || 0;
+
+      if (entry._id?.productId) {
+        productIdsSet.add(String(entry._id.productId));
+      }
+
+      pnMap[pn].items.push({
+        productId: entry._id?.productId,
+        categoryId: entry._id?.categoryId,
+        totalCartons: entry.totalCartons || 0,
+        factoryDispatched: entry.factoryDispatchedCartons || 0,
+        warehouseReceived: entry.warehouseReceivedCartons || 0,
+        difference: (entry.factoryDispatchedCartons || 0) - (entry.warehouseReceivedCartons || 0),
+        qrCodes: (entry.qrSample || []).slice(0, 50),
+      });
+    });
+
+    // 3️⃣ Also check Production records in case any PN was created but no QR code yet or to enrich details
+    const productionDocs = await Production.find({
+      isActive: true,
+      ...(qrMatch.productionNo ? { productionNo: qrMatch.productionNo } : {}),
+      ...(qrMatch.createdAt ? { createdAt: qrMatch.createdAt } : {}),
+    })
+      .populate("factory", "name location")
+      .lean();
+
+    productionDocs.forEach((prod) => {
+      const pn = prod.productionNo;
+      if (!pn) return;
+
+      if (prod.productId) productIdsSet.add(String(prod.productId));
+
+      if (!pnMap[pn]) {
+        pnMap[pn] = {
+          productionNo: pn,
+          factory: prod.factory?._id || prod.factory,
+          factory_name: prod.factory?.name || "Factory",
+          warehouses: new Set(),
+          createdAt: prod.createdAt || prod.productionDate,
+          totalCartons: prod.productionQuantity || 0,
+          factoryDispatchedCartons: prod.dispatchedQuantity || 0,
+          warehouseReceivedCartons: prod.stockinQuantity || 0,
+          warehouseDispatchedCartons: 0,
+          status: prod.status,
+          items: [
+            {
+              productId: prod.productId,
+              categoryId: prod.categoryId,
+              totalCartons: prod.productionQuantity || 0,
+              factoryDispatched: prod.dispatchedQuantity || 0,
+              warehouseReceived: prod.stockinQuantity || 0,
+              difference: (prod.dispatchedQuantity || 0) - (prod.stockinQuantity || 0),
+              qrCodes: [],
+            },
+          ],
+        };
+      }
+    });
+
+    // 4️⃣ Populate Factories and Warehouses
+    const { Factory, Warehouse } = require("../models");
+    const [factories, allWarehouses, products] = await Promise.all([
+      Factory.find({}).lean(),
+      Warehouse.find({}).lean(),
+      Product.find({ _id: { $in: [...productIdsSet] } }).lean(),
+    ]);
+
+    const factoryMap = {};
+    factories.forEach((f) => {
+      factoryMap[String(f._id)] = f.name;
+    });
+
+    const warehouseMap = {};
+    allWarehouses.forEach((w) => {
+      warehouseMap[String(w._id)] = w.name;
+    });
+
+    const productMap = {};
+    products.forEach((p) => {
+      productMap[String(p._id)] = p;
+    });
+
+    // 5️⃣ Format and compute carton reconciliation per Production Number
+    const allFormattedList = Object.values(pnMap).map((pnData) => {
+      const factory_name =
+        factoryMap[String(pnData.factory)] || pnData.factory_name || "Factory";
+      const warehouseNames = Array.from(pnData.warehouses)
+        .map((wId) => warehouseMap[wId] || "Warehouse")
+        .filter(Boolean);
+
+      const cartonDifference =
+        pnData.factoryDispatchedCartons - pnData.warehouseReceivedCartons;
+
+      // Status determination
+      let verificationStatus = "PENDING_DISPATCH";
+      let statusLabel = "Pending Factory Dispatch";
+      let statusType = "pending";
+
+      if (
+        pnData.factoryDispatchedCartons === 0 &&
+        pnData.warehouseReceivedCartons === 0
+      ) {
+        verificationStatus = "PENDING_DISPATCH";
+        statusLabel = "Pending Factory Dispatch";
+        statusType = "pending";
+      } else if (
+        pnData.factoryDispatchedCartons > 0 &&
+        pnData.warehouseReceivedCartons === 0
+      ) {
+        verificationStatus = "IN_TRANSIT";
+        statusLabel = "In Transit";
+        statusType = "in_transit";
+      } else if (cartonDifference === 0) {
+        verificationStatus = "MATCHED";
+        statusLabel = "Fully Matched";
+        statusType = "matched";
+      } else if (cartonDifference > 0) {
+        verificationStatus = "SHORTAGE";
+        statusLabel = `${cartonDifference} Cartons Shortage`;
+        statusType = "shortage";
+      } else {
+        verificationStatus = "EXCESS";
+        statusLabel = `${Math.abs(cartonDifference)} Cartons Excess`;
+        statusType = "excess";
+      }
+
+      // Enrich item breakdown
+      const enrichedItems = (pnData.items || []).map((it) => {
+        const prod = productMap[String(it.productId)];
+        const cat = prod?.category?.find(
+          (c) => String(c._id) === String(it.categoryId)
+        );
+
+        const itemDiff = it.factoryDispatched - it.warehouseReceived;
+        let itemStatusLabel = "Pending Dispatch";
+        let itemStatusType = "pending";
+
+        if (it.factoryDispatched === 0 && it.warehouseReceived === 0) {
+          itemStatusLabel = "Pending Dispatch";
+          itemStatusType = "pending";
+        } else if (it.factoryDispatched > 0 && it.warehouseReceived === 0) {
+          itemStatusLabel = "In Transit";
+          itemStatusType = "in_transit";
+        } else if (itemDiff === 0) {
+          itemStatusLabel = "Fully Matched";
+          itemStatusType = "matched";
+        } else if (itemDiff > 0) {
+          itemStatusLabel = `${itemDiff} Shortage`;
+          itemStatusType = "shortage";
+        } else {
+          itemStatusLabel = `${Math.abs(itemDiff)} Excess`;
+          itemStatusType = "excess";
+        }
+
+        return {
+          article: prod?.article || "Article",
+          categoryCode: cat?.categoryCode || "",
+          color: cat?.color || "",
+          size: cat?.size || "",
+          type: cat?.type ? (Array.isArray(cat.type) ? cat.type[0] : cat.type) : "",
+          quality: cat?.quality
+            ? Array.isArray(cat.quality)
+              ? cat.quality[0]
+              : cat.quality
+            : "",
+          image: cat?.image || [],
+          totalCartons: it.totalCartons,
+          factoryDispatched: it.factoryDispatched,
+          warehouseReceived: it.warehouseReceived,
+          difference: itemDiff,
+          statusLabel: itemStatusLabel,
+          statusType: itemStatusType,
+          qrCodes: it.qrCodes || [],
+        };
+      });
+
+      // Primary article names for quick display
+      const articleNames = Array.from(
+        new Set(enrichedItems.map((it) => it.article).filter(Boolean))
+      );
+
+      return {
+        productionNo: pnData.productionNo,
+        createdAt: pnData.createdAt,
+        factory_name,
+        warehouses: warehouseNames.length ? warehouseNames : ["Warehouse"],
+        articleNames,
+        totalCartons: pnData.totalCartons,
+        factoryDispatchedCartons: pnData.factoryDispatchedCartons,
+        warehouseReceivedCartons: pnData.warehouseReceivedCartons,
+        warehouseDispatchedCartons: pnData.warehouseDispatchedCartons,
+        cartonDifference,
+        verificationStatus,
+        statusLabel,
+        statusType,
+        items: enrichedItems,
+      };
+    });
+
+    // 6️⃣ Sort by createdAt descending
+    allFormattedList.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // 7️⃣ Apply Search filter (by PN Number, factory, warehouse, article)
+    let filteredList = allFormattedList;
+    if (search && search.trim() !== "") {
+      const q = search.trim().toLowerCase();
+      filteredList = filteredList.filter(
+        (entry) =>
+          entry.productionNo.toLowerCase().includes(q) ||
+          entry.factory_name.toLowerCase().includes(q) ||
+          entry.warehouses.some((w) => w.toLowerCase().includes(q)) ||
+          entry.articleNames.some((a) => a.toLowerCase().includes(q))
+      );
+    }
+
+    // 8️⃣ Compute summary KPI statistics
+    const summary = {
+      totalPNCount: filteredList.length,
+      totalOrderCartons: filteredList.reduce((sum, o) => sum + o.totalCartons, 0),
+      totalFactoryDispatched: filteredList.reduce(
+        (sum, o) => sum + o.factoryDispatchedCartons,
+        0
+      ),
+      totalWarehouseReceived: filteredList.reduce(
+        (sum, o) => sum + o.warehouseReceivedCartons,
+        0
+      ),
+      totalDifference: filteredList.reduce(
+        (sum, o) => sum + o.cartonDifference,
+        0
+      ),
+      fullyMatchedCount: filteredList.filter(
+        (o) => o.verificationStatus === "MATCHED"
+      ).length,
+      shortageCount: filteredList.filter(
+        (o) => o.verificationStatus === "SHORTAGE"
+      ).length,
+      excessCount: filteredList.filter((o) => o.verificationStatus === "EXCESS")
+        .length,
+      inTransitCount: filteredList.filter(
+        (o) => o.verificationStatus === "IN_TRANSIT"
+      ).length,
+      pendingCount: filteredList.filter(
+        (o) => o.verificationStatus === "PENDING_DISPATCH"
+      ).length,
+    };
+
+    // 9️⃣ Apply Status filter
+    if (status && status !== "ALL") {
+      filteredList = filteredList.filter(
+        (o) =>
+          o.verificationStatus === status ||
+          o.statusType === status.toLowerCase()
+      );
+    }
+
+    // 🔟 Paginate
+    const totalItems = filteredList.length;
+    const totalPages = Math.ceil(totalItems / limitNum) || 1;
+    const paginatedData = filteredList.slice(skip, skip + limitNum);
+
+    return {
+      success: true,
+      data: paginatedData,
+      summary,
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        totalItems,
+        limit: limitNum,
+      },
+    };
+  } catch (error) {
+    console.error("Error in getReviewListOrders service:", error);
+    throw error;
+  }
+};
+
+

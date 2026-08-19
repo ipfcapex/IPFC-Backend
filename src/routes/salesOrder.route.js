@@ -22,6 +22,9 @@ router.get('/warehouse-scan/pending', salesOrderController.getOrdersForWarehouse
 router.get('/article-names', salesOrderController.getArticleNames);
 router.get('/article-details/:articleName', salesOrderController.getArticleDetailsByName);
 
+// Review List - Carton Quantity Verification (Factory -> Warehouse)
+router.get('/review-list', requireAuth, requireAdminRoles('Admin', 'Administrator', 'Super Admin'), salesOrderController.getReviewList);
+
 router.get('/:id',  salesOrderController.getById);
 router.put('/:id', salesOrderController.update);
 router.delete('/:id', salesOrderController.remove);

@@ -691,3 +691,38 @@ exports.getArticleDetailsByName = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// GET /sale-order/review-list — Review List Carton Quantity Verification (Factory -> Warehouse)
+exports.getReviewList = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      search = "",
+      startDate = "",
+      endDate = "",
+      status = "ALL",
+      type = "",
+    } = req.query;
+
+    const result = await orderService.getReviewListOrders({
+      page,
+      limit,
+      search: search?.trim() || "",
+      startDate: startDate?.trim() || "",
+      endDate: endDate?.trim() || "",
+      status: status?.trim() || "ALL",
+      type: type?.trim() || "",
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("Error in getReviewList controller:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch review list carton verification data",
+      error: error.message,
+    });
+  }
+};
+
