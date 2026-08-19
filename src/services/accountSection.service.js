@@ -37,10 +37,12 @@ exports.updateLastNoteService = async (id, text, approvalStatus) => {
   // 🔔 Send notifications based on approvalStatus
   let notifications = [];
   if (approvalStatus.toUpperCase() === "APPROVED") {
+    // Approved: notify with sales person name, customer name and a message.
     const approveNotification = {
-      message: `Order ${order.salesOrderNo}${customerName ? ` for ${customerName}` : ""} was Approved by Account Section.`,
+      message: `${createdByName || "Sales Person"} - Customer ${customerName || "N/A"}: Order ${order.salesOrderNo} was Approved by Account Section.`,
       createdById,
       createdByName,
+      customerName,
       salesOrderNo: order.salesOrderNo,
       data: order,
     };
@@ -50,10 +52,12 @@ exports.updateLastNoteService = async (id, text, approvalStatus) => {
   }
 
   if (approvalStatus.toUpperCase() === "REJECTED") {
+    // Rejected: notify with sales person name, order number, customer name and reason.
     const rejectNotification = {
-      message: `Order ${order.salesOrderNo}${customerName ? ` for ${customerName}` : ""} was Rejected by Account Section.${text ? ` Note: "${text}"` : ""}`,
+      message: `${createdByName || "Sales Person"} - Customer ${customerName || "N/A"}: Order ${order.salesOrderNo} was Rejected by Account Section.${text && text.trim() ? ` Reason: ${text.trim()}` : ""}`,
       createdById,
       createdByName,
+      customerName,
       salesOrderNo: order.salesOrderNo,
       data: order,
     };

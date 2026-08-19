@@ -490,7 +490,7 @@ exports.getAllbySalesperson = async (req, res) => {
       );
     };
     let cartOrders = await SellOrder.find(query)
-      .select("salesOrderNo customer article items createdBy createdAt numOfDispatchedQty scheme Location")
+      .select("salesOrderNo customer article items createdBy createdAt numOfDispatchedQty scheme Location accountSectionApproval note inventoryManagerApproval deliveryStatus ScannedByWarehouseManager")
       .populate("customer", "name phone email location")
       .populate("createdBy", "name email")
       .populate("scheme", "schemesName schemesType schemesQuantity schemesDescription")
