@@ -213,52 +213,122 @@ exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "", ext
   if (salespersonId) historyQuery.createdBy = salespersonId;
   if (articleProductIds) historyQuery["WishList.productId"] = { $in: articleProductIds };
 
+  // One-year cutoff for the computed "Expired" status (mirrors
+  // computeActiveWishlistStatus, expressed for the aggregation pipeline).
+  const oneYearAgo = new Date();
+  oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+
+  // Computed status for active wishlists: stock time set -> null (existing
+  // countdown / Accept / Reject flow), otherwise "Expired" when unfulfilled for
+  // >= 1 year, else "Not Fulfilled".
+  const activeWishActionExpr = {
+    $cond: [
+      "$wishlistStockTime",
+      null,
+      {
+        $cond: [
+          { $lte: [{ $ifNull: ["$originalCreatedAt", "$createdAt"] }, oneYearAgo] },
+          "Expired",
+          "Not Fulfilled",
+        ],
+      },
+    ],
+  };
+
+  const wanted = status && status.trim() !== "" ? status.trim() : null;
+
+  // Merge active + history in the DB (via $unionWith), tag/compute status, then
+  // filter, sort and paginate server-side so only one page is ever materialised.
+  // The expensive populate + product enrichment then runs on that single page
+  // instead of on the entire (ever-growing) history collection.
+  const pipeline = [
+    { $match: activeQuery },
+    {
+      $addFields: {
+        isHistory: false,
+        _sortDate: { $ifNull: ["$updatedAt", "$createdAt"] },
+        wishAction: activeWishActionExpr,
+      },
+    },
+    {
+      $unionWith: {
+        coll: WishlistHistory.collection.name,
+        pipeline: [
+          { $match: historyQuery },
+          {
+            $addFields: {
+              isHistory: true,
+              _sortDate: {
+                $ifNull: ["$actionAt", { $ifNull: ["$updatedAt", "$createdAt"] }],
+              },
+              wishAction: null,
+            },
+          },
+        ],
+      },
+    },
+    // "Stock Time" status filter on the computed value; null wishAction (stock
+    // time set, or any history row) counts as "Pending".
+    { $addFields: { statusForFilter: { $ifNull: ["$wishAction", "Pending"] } } },
+    ...(wanted ? [{ $match: { statusForFilter: wanted } }] : []),
+    { $sort: { _sortDate: -1 } },
+    {
+      $facet: {
+        data: [
+          { $skip: skip },
+          { $limit: limitNum },
+          { $project: { _id: 1, isHistory: 1, wishAction: 1 } },
+        ],
+        meta: [{ $count: "totalItems" }],
+      },
+    },
+  ];
+
+  const [aggResult] = await Wishlist.aggregate(pipeline).allowDiskUse(true);
+  const pageRefs = aggResult?.data || [];
+  const totalItems = aggResult?.meta?.[0]?.totalItems || 0;
+  const totalPages = Math.ceil(totalItems / limitNum) || 1;
+
+  // Re-fetch just this page's documents from each collection with the same
+  // populated relations as before.
+  const activeIds = pageRefs.filter((r) => !r.isHistory).map((r) => r._id);
+  const historyIds = pageRefs.filter((r) => r.isHistory).map((r) => r._id);
+
   const [activeDocs, historyDocs] = await Promise.all([
-    Wishlist.find(activeQuery)
-      .populate("customer", "name email phone location")
-      .populate("createdBy", "name email")
-      .populate("scheme", "name")
-      .lean(),
-    WishlistHistory.find(historyQuery)
-      .populate("customer", "name email phone location")
-      .populate("createdBy", "name email")
-      .populate("scheme", "name")
-      .lean(),
+    activeIds.length
+      ? Wishlist.find({ _id: { $in: activeIds } })
+          .populate("customer", "name email phone location")
+          .populate("createdBy", "name email")
+          .populate("scheme", "name")
+          .lean()
+      : [],
+    historyIds.length
+      ? WishlistHistory.find({ _id: { $in: historyIds } })
+          .populate("customer", "name email phone location")
+          .populate("createdBy", "name email")
+          .populate("scheme", "name")
+          .lean()
+      : [],
   ]);
 
-  // Tag so the UI can dim history rows and hide their actions.
-  const activeTagged = activeDocs.map((d) => ({
-    ...d,
-    isHistory: false,
-    wishAction: computeActiveWishlistStatus(d),
-    _sortDate: d.updatedAt || d.createdAt,
-  }));
-  const historyTagged = historyDocs.map((d) => ({
-    ...d,
-    isHistory: true,
-    _sortDate: d.actionAt || d.updatedAt || d.createdAt,
-  }));
+  const activeMap = new Map(activeDocs.map((d) => [String(d._id), d]));
+  const historyMap = new Map(historyDocs.map((d) => [String(d._id), d]));
 
-  let combined = [...activeTagged, ...historyTagged].sort(
-    (a, b) => new Date(b._sortDate) - new Date(a._sortDate)
-  );
-
-  // "Stock Time" status filter. Status is a computed value (not a stored field),
-  // so it is applied here after both collections are tagged and merged. Active
-  // wishlists whose stock time is set (wishAction null) count as "Pending".
-  if (status && status.trim() !== "") {
-    const wanted = status.trim();
-    combined = combined.filter((d) => (d.wishAction || "Pending") === wanted);
-  }
-
-  const totalItems = combined.length;
-  const totalPages = Math.ceil(totalItems / limitNum) || 1;
-  const pageSlice = combined.slice(skip, skip + limitNum);
+  // Rebuild the page in the DB-sorted order, re-attaching the computed tags so
+  // the response shape matches the previous implementation exactly.
+  const pageSlice = pageRefs
+    .map((ref) => {
+      const base = ref.isHistory
+        ? historyMap.get(String(ref._id))
+        : activeMap.get(String(ref._id));
+      if (!base) return null;
+      return ref.isHistory
+        ? { ...base, isHistory: true }
+        : { ...base, isHistory: false, wishAction: ref.wishAction };
+    })
+    .filter(Boolean);
 
   await enrichOrdersWithProductDetails(pageSlice);
-  pageSlice.forEach((d) => {
-    delete d._sortDate;
-  });
 
   return {
     wishlists: pageSlice,

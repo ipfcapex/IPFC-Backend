@@ -79,276 +79,384 @@ async function enrichOrdersWithProductDetails(orders) {
 }
 exports.enrichOrdersWithProductDetails = enrichOrdersWithProductDetails;
 
-exports.getAggregatedStock = async (page = 1, limit = 10, search = "", excludeWishlistId = null, groupByArticle = false) => {
-  const skip = (page - 1) * limit;
+// The five stock sources (warehouse, production, unscanned sell-orders, cart,
+// wishlist) unioned and merged into one row per productId+categoryId carrying
+// the five raw quantities. No product lookup, no sort, no pagination. Shared by
+// getAggregatedStock (paginated display) and getStockAvailabilityMap (point
+// availability lookup for order/cart creation). Pass productIds to restrict the
+// whole scan to only those articles.
+function buildMergedStockPipeline(excludeWishlistId = null, productIds = null) {
+  // Zero-filled quantity fields so every source contributes the same shape into
+  // the $unionWith stream (each source overrides only the field it owns).
+  const zeros = {
+    stockQty: { $literal: 0 },
+    productionQty: { $literal: 0 },
+    orderQty: { $literal: 0 },
+    cartQty: { $literal: 0 },
+    wishlistQty: { $literal: 0 },
+  };
 
-  /* ===============================
-     1️⃣ WAREHOUSE STOCK
-     =============================== */
-  const stockAgg = await Stock.aggregate([
+  const hasIds = Array.isArray(productIds) && productIds.length > 0;
+  // When productIds is supplied, restrict to them; otherwise keep the original
+  // "not null" behaviour.
+  const idFilter = (field) =>
+    hasIds ? { [field]: { $in: productIds } } : { [field]: { $ne: null } };
+
+  // Wishlist reservation filter. When converting a wishlist INTO an order, that
+  // wishlist's own reserved qty must not count against availability.
+  const wishlistMatch = {
+    isActive: true,
+    wishlistStockTime: { $ne: null },
+    ...(excludeWishlistId
+      ? { _id: { $ne: new mongoose.Types.ObjectId(excludeWishlistId) } }
+      : {}),
+    ...(hasIds ? { "WishList.productId": { $in: productIds } } : {}),
+  };
+
+  return [
+    /* 1️⃣ WAREHOUSE STOCK (base collection) */
     { $match: { isActive: { $ne: false } } },
     { $unwind: "$stockdata" },
-    { $match: { "stockdata.productId": { $ne: null } } },
+    { $match: idFilter("stockdata.productId") },
     {
       $group: {
-        _id: {
-          productId: "$stockdata.productId",
-          categoryId: "$stockdata.categoryId",
-        },
+        _id: { productId: "$stockdata.productId", categoryId: "$stockdata.categoryId" },
         stockQty: {
-          $sum: {
-            $cond: [
-              { $eq: ["$stockdata.dispatched", false] },
-              "$stockdata.quantity",
-              0,
-            ],
-          },
+          $sum: { $cond: [{ $eq: ["$stockdata.dispatched", false] }, "$stockdata.quantity", 0] },
         },
       },
     },
     { $match: { stockQty: { $gt: 0 } } },
-  ]);
+    { $project: { _id: 1, ...zeros, stockQty: "$stockQty" } },
 
-  /* ===============================
-     2️⃣ PRODUCTION STOCK (Scanned QR Codes only)
-     =============================== */
-const prodAgg = await Production.aggregate([
-    { $match: { isActive: { $ne: false }, productId: { $ne: null } } },
+    /* 2️⃣ PRODUCTION STOCK (scanned) */
     {
-      $group: {
-        _id: {
-          productId: "$productId",
-          categoryId: "$categoryId",
-        },
-        totalProduction: { $sum: { $ifNull: ["$stockinQuantity", 0] } },
-        totalDispatched: { $sum: { $ifNull: ["$dispatchedQuantity", 0] } },
+      $unionWith: {
+        coll: Production.collection.name,
+        pipeline: [
+          { $match: { isActive: { $ne: false }, ...idFilter("productId") } },
+          {
+            $group: {
+              _id: { productId: "$productId", categoryId: "$categoryId" },
+              totalProduction: { $sum: { $ifNull: ["$stockinQuantity", 0] } },
+              totalDispatched: { $sum: { $ifNull: ["$dispatchedQuantity", 0] } },
+            },
+          },
+          { $project: { _id: 1, productionQty: { $subtract: ["$totalProduction", "$totalDispatched"] } } },
+          { $match: { productionQty: { $gt: 0 } } },
+          { $project: { _id: 1, ...zeros, productionQty: "$productionQty" } },
+        ],
       },
     },
+
+    /* 3️⃣ SELLORDER (unscanned only) */
+    {
+      $unionWith: {
+        coll: SellOrder.collection.name,
+        pipeline: [
+          {
+            $match: {
+              isActive: true,
+              deliveryStatus: { $nin: ["DELIVERED", "PARTIALLY_DELIVERED", "COMPLETED"] },
+              accountSectionApproval: { $in: ["PENDING", "APPROVED"] },
+              inventoryManagerApproval: { $in: ["PENDING", "APPROVED"] },
+            },
+          },
+          { $unwind: "$items" },
+          ...(hasIds ? [{ $match: { "items.productId": { $in: productIds } } }] : []),
+          {
+            $addFields: {
+              itemQuantity: {
+                $cond: [
+                  { $gt: [{ $size: { $ifNull: ["$items.warehouses", []] } }, 0] },
+                  {
+                    $sum: {
+                      $map: {
+                        input: "$items.warehouses",
+                        as: "w",
+                        in: { $cond: [{ $eq: ["$$w.ScanByorder", "UNSCANNED"] }, "$$w.quantity", 0] },
+                      },
+                    },
+                  },
+                  "$items.quantity",
+                ],
+              },
+            },
+          },
+          {
+            $group: {
+              _id: { productId: "$items.productId", categoryId: "$items.categoryId" },
+              orderQty: { $sum: "$itemQuantity" },
+            },
+          },
+          { $project: { _id: 1, ...zeros, orderQty: "$orderQty" } },
+        ],
+      },
+    },
+
+    /* 4️⃣ CART RESERVED QTY */
+    {
+      $unionWith: {
+        coll: Cart.collection.name,
+        pipeline: [
+          { $match: { isActive: true } },
+          { $unwind: { path: "$items" } },
+          { $match: idFilter("items.productId") },
+          {
+            $group: {
+              _id: { productId: "$items.productId", categoryId: "$items.categoryId" },
+              cartQty: { $sum: { $ifNull: ["$items.quantity", 0] } },
+            },
+          },
+          { $project: { _id: 1, ...zeros, cartQty: "$cartQty" } },
+        ],
+      },
+    },
+
+    /* 5️⃣ WISHLIST RESERVED QTY */
+    {
+      $unionWith: {
+        coll: Wishlist.collection.name,
+        pipeline: [
+          { $match: wishlistMatch },
+          { $unwind: "$WishList" },
+          { $match: idFilter("WishList.productId") },
+          {
+            $group: {
+              _id: { productId: "$WishList.productId", categoryId: "$WishList.categoryId" },
+              wishlistQty: { $sum: { $ifNull: ["$WishList.quantity", 0] } },
+            },
+          },
+          { $project: { _id: 1, ...zeros, wishlistQty: "$wishlistQty" } },
+        ],
+      },
+    },
+
+    /* MERGE all five sources by product + category */
+    {
+      $group: {
+        _id: "$_id",
+        stockQty: { $sum: "$stockQty" },
+        productionQty: { $sum: "$productionQty" },
+        orderQty: { $sum: "$orderQty" },
+        cartQty: { $sum: "$cartQty" },
+        wishlistQty: { $sum: "$wishlistQty" },
+      },
+    },
+  ];
+}
+
+// Availability (Total_Available) for the given productIds only, returned as a
+// fast map keyed by `${productId}_${categoryId}`. Used by order/cart creation to
+// check specific articles' stock without paginating the whole catalog, so no
+// article is ever hidden on a later "page".
+exports.getStockAvailabilityMap = async (productIds = null, excludeWishlistId = null) => {
+  const pipeline = [
+    ...buildMergedStockPipeline(excludeWishlistId, productIds),
     {
       $project: {
         _id: 1,
-        productionQty: { $subtract: ["$totalProduction", "$totalDispatched"] },
+        Total_Available: {
+          $max: [
+            {
+              $subtract: [
+                { $add: ["$stockQty", "$productionQty"] },
+                { $add: ["$orderQty", "$cartQty", "$wishlistQty"] },
+              ],
+            },
+            0,
+          ],
+        },
       },
     },
-    { $match: { productionQty: { $gt: 0 } } },
-  ]);
+  ];
 
-  /* ===============================
-     3️⃣ SELLORDER (UNSCANNED ONLY)
-     =============================== */
-  const orderAgg = await SellOrder.aggregate([
-  {
-    $match: {
-      isActive: true,
-      // 1️⃣ Filter by Order Status to exclude DELIVERED/COMPLETED orders
-      deliveryStatus: { $nin: ["DELIVERED", "PARTIALLY_DELIVERED", "COMPLETED"] }, 
-      accountSectionApproval: { $in: ["PENDING", "APPROVED"] },
-      inventoryManagerApproval: { $in: ["PENDING", "APPROVED"] },
+  const rows = await Stock.aggregate(pipeline).allowDiskUse(true);
+  const map = {};
+  for (const r of rows) {
+    map[`${r._id.productId}_${r._id.categoryId}`] = r.Total_Available || 0;
+  }
+  return map;
+};
+
+exports.getAggregatedStock = async (page = 1, limit = 10, search = "", excludeWishlistId = null, groupByArticle = false) => {
+  const skip = (page - 1) * limit;
+  const isGroup = groupByArticle === "true" || groupByArticle === true;
+  const searchTerm = search ? String(search).trim() : "";
+
+  // Case-insensitive regex test against a (possibly non-string) field, run
+  // inside $expr so search executes in the engine instead of Node memory.
+  const regexOn = (field) => ({
+    $regexMatch: {
+      input: { $toString: { $ifNull: [field, ""] } },
+      regex: searchTerm,
+      options: "i",
     },
-  },
-  { $unwind: "$items" },
-  {
-    $addFields: {
-      itemQuantity: {
-        $cond: [
-          { $gt: [{ $size: { $ifNull: ["$items.warehouses", []] } }, 0] },
-          {
-            $sum: {
-              $map: {
-                input: "$items.warehouses",
-                as: "w",
-                in: {
-                  $cond: [
-                    // 2️⃣ Only count if UNSCANNED (not yet picked/dispatched)
-                    { $eq: ["$$w.ScanByorder", "UNSCANNED"] },
-                    "$$w.quantity",
-                    0,
+  });
+
+  // Attach product/category display fields and compute per-category availability.
+  const displayStage = [
+    {
+      $lookup: {
+        from: Product.collection.name,
+        localField: "_id.productId",
+        foreignField: "_id",
+        as: "product",
+      },
+    },
+    { $addFields: { product: { $first: "$product" } } },
+    {
+      $addFields: {
+        category: {
+          $first: {
+            $filter: {
+              input: { $ifNull: ["$product.category", []] },
+              as: "c",
+              cond: { $eq: ["$$c._id", "$_id.categoryId"] },
+            },
+          },
+        },
+      },
+    },
+    {
+      $addFields: {
+        productId: "$_id.productId",
+        categoryId: "$_id.categoryId",
+        article: "$product.article",
+        categoryCode: "$category.categoryCode",
+        color: "$category.color",
+        size: "$category.size",
+        type: {
+          $cond: [{ $isArray: "$category.type" }, { $first: "$category.type" }, "$category.type"],
+        },
+        quality: {
+          $cond: [{ $isArray: "$category.quality" }, { $first: "$category.quality" }, "$category.quality"],
+        },
+        articleCode: { $ifNull: ["$category.articleCode", ""] },
+        image: { $ifNull: ["$category.image", []] },
+        Total_Available: {
+          $max: [
+            {
+              $subtract: [
+                { $add: ["$stockQty", "$productionQty"] },
+                { $add: ["$orderQty", "$cartQty", "$wishlistQty"] },
+              ],
+            },
+            0,
+          ],
+        },
+      },
+    },
+  ];
+
+  // Group-by-article / search / final projection stages differ by mode.
+  let tail;
+  if (isGroup) {
+    tail = [
+      {
+        $group: {
+          _id: "$article",
+          article: { $first: "$article" },
+          Warehouse_Qty: { $sum: "$stockQty" },
+          Production_Qty: { $sum: "$productionQty" },
+          Order_Qty: { $sum: "$orderQty" },
+          Cart_Qty: { $sum: "$cartQty" },
+          Wishlist_Qty: { $sum: "$wishlistQty" },
+          Total_Available: { $sum: "$Total_Available" },
+          image: { $first: "$image" },
+        },
+      },
+      ...(searchTerm ? [{ $match: { $expr: regexOn("$article") } }] : []),
+      {
+        $project: {
+          _id: 0,
+          article: 1,
+          Warehouse_Qty: 1,
+          Production_Qty: 1,
+          Order_Qty: 1,
+          Cart_Qty: 1,
+          Wishlist_Qty: 1,
+          Total_Available: 1,
+          image: 1,
+        },
+      },
+    ];
+  } else {
+    tail = [
+      ...(searchTerm
+        ? [
+            {
+              $match: {
+                $expr: {
+                  $or: [
+                    regexOn("$article"),
+                    regexOn("$categoryCode"),
+                    regexOn("$color"),
+                    regexOn("$size"),
+                    regexOn("$type"),
+                    regexOn("$quality"),
+                    regexOn("$articleCode"),
                   ],
                 },
               },
             },
-          },
-          "$items.quantity",
-        ],
-      },
-    },
-  },
-  {
-    $group: {
-      _id: {
-        productId: "$items.productId",
-        categoryId: "$items.categoryId",
-      },
-      orderQty: { $sum: "$itemQuantity" },
-    },
-  },
-]);
-
-  /* ===============================
-     4️⃣ CART RESERVED QTY
-     =============================== */
-  const cartAgg = await Cart.aggregate([
-    { $match: { isActive: true } },
-    { $unwind: { path: "$items"} },
-    { $match: { "items.productId": { $ne: null } } },
-    {
-      $group: {
-        _id: {
-          productId: "$items.productId",
-          categoryId: "$items.categoryId",
+          ]
+        : []),
+      {
+        $project: {
+          _id: 0,
+          productId: 1,
+          categoryId: 1,
+          article: 1,
+          categoryCode: 1,
+          color: 1,
+          size: 1,
+          type: 1,
+          quality: 1,
+          articleCode: 1,
+          Warehouse_Qty: "$stockQty",
+          Production_Qty: "$productionQty",
+          Order_Qty: "$orderQty",
+          Cart_Qty: "$cartQty",
+          Wishlist_Qty: "$wishlistQty",
+          Total_Available: 1,
+          image: 1,
         },
-        cartQty: { $sum: { $ifNull: ["$items.quantity", 0] } },
+      },
+    ];
+  }
+
+  // One server-side pipeline: shared source union/merge, then enrich, search,
+  // sort and paginate in the engine. Only one page ever crosses the wire.
+  const pipeline = [
+    ...buildMergedStockPipeline(excludeWishlistId),
+
+    /* Enrich with product/category details + availability */
+    ...displayStage,
+
+    /* Group-by-article / search / project */
+    ...tail,
+
+    /* Sort + paginate in the engine; one page + total count in a single pass */
+    { $sort: { Total_Available: -1 } },
+    {
+      $facet: {
+        data: [{ $skip: skip }, { $limit: limit }],
+        totalCount: [{ $count: "count" }],
       },
     },
-  ]);
-
-  /* ===============================
-    5️⃣ Wishlist Reserve QTY
-     =============================== */
-
-const wishlistAgg = await Wishlist.aggregate([
-  {
-    $match: {
-      isActive: true,
-      // The Wishlist collection only holds pending wishlists now (accepted /
-      // rejected / timed-out ones are archived to WishlistHistory and removed),
-      // so every remaining wishlist with stock applied is a live reservation.
-      wishlistStockTime: { $ne: null}, // only valid wishlist
-      // When creating an order FROM a wishlist, that wishlist's own reserved
-      // qty must NOT be counted against availability (the salesperson is
-      // converting it into an order). For a normal order excludeWishlistId is
-      // null and every pending wishlist keeps reserving.
-      ...(excludeWishlistId
-        ? { _id: { $ne: new mongoose.Types.ObjectId(excludeWishlistId) } }
-        : {})
-    }
-  },
-  { $unwind: "$WishList" },
-  { $match: { "WishList.productId": { $ne: null } } },
-  {
-    $group: {
-      _id: {
-        productId: "$WishList.productId",
-        categoryId: "$WishList.categoryId",
-      },
-      wishlistQty: { $sum: { $ifNull: ["$WishList.quantity", 0] } }
-    }
-  }
-]);
-
-
-
-  /* ===============================
-    MERGE ALL DATA
-     =============================== */
-  const combinedMap = {};
-  // Group everything by the product + category combination ids
-  const normalizeKey = o => `${String(o.productId)}_${String(o.categoryId)}`;
-
-  const addToMap = (item, field) => {
-    const key = normalizeKey(item._id);
-    combinedMap[key] ??= { _id: item._id, stockQty: 0, productionQty: 0, orderQty: 0, cartQty: 0, wishlistQty: 0, image: [] };
-    combinedMap[key][field] = item[field] || 0;
-  };
-
-  stockAgg.forEach(i => addToMap(i, "stockQty"));
-  prodAgg.forEach(i => addToMap(i, "productionQty"));
-  orderAgg.forEach(i => addToMap(i, "orderQty"));
-  cartAgg.forEach(i => addToMap(i, "cartQty"));
-  wishlistAgg.forEach(i => addToMap(i, "wishlistQty"));
-
-  /* ===============================
-     6️⃣ PRODUCT / CATEGORY DETAILS (for display)
-     =============================== */
-  const productIds = [
-    ...new Set(
-      Object.values(combinedMap)
-        .map(q => q._id.productId && String(q._id.productId))
-        .filter(Boolean)
-    ),
   ];
-  const products = await Product.find({ _id: { $in: productIds } }).select("article category");
-  const productMap = {};
-  products.forEach(p => { productMap[String(p._id)] = p; });
 
-  Object.values(combinedMap).forEach(q => {
-    const prod = productMap[String(q._id.productId)];
-    const cat = prod?.category?.find(c => String(c._id) === String(q._id.categoryId));
-    q.article = prod?.article;
-    q.categoryCode = cat?.categoryCode;
-    q.color = cat?.color;
-    q.size = cat?.size;
-    q.type = Array.isArray(cat?.type) ? cat.type[0] : cat?.type;
-    q.quality = Array.isArray(cat?.quality) ? cat.quality[0] : cat?.quality;
-    q.image = cat?.image || [];
-    q.articleCode = cat?.articleCode || "";
-  });
-
-
-  /* ===============================
-     7️⃣ FINAL RESPONSE
-     =============================== */
-  const result = Object.values(combinedMap).map(q => {
-    const total = q.stockQty + q.productionQty - q.orderQty - q.cartQty - q.wishlistQty;
-    return {
-      productId: q._id.productId,
-      categoryId: q._id.categoryId,
-      article: q.article,
-      categoryCode: q.categoryCode,
-      color: q.color,
-      size: q.size,
-      type: q.type,
-      quality: q.quality,
-      articleCode: q.articleCode,
-      Warehouse_Qty: q.stockQty,
-      Production_Qty: q.productionQty,
-      Order_Qty: q.orderQty,
-      Cart_Qty: q.cartQty,
-      Wishlist_Qty: q.wishlistQty,
-      Total_Available: Math.max(total, 0),
-      image: q.image,
-    };
-  });
-
-  let finalResult = result;
-
-  if (groupByArticle === 'true' || groupByArticle === true) {
-    const grouped = {};
-    for (const r of result) {
-      if (!grouped[r.article]) {
-        grouped[r.article] = {
-          article: r.article,
-          Warehouse_Qty: 0,
-          Production_Qty: 0,
-          Order_Qty: 0,
-          Cart_Qty: 0,
-          Wishlist_Qty: 0,
-          Total_Available: 0,
-          image: r.image
-        };
-      }
-      grouped[r.article].Warehouse_Qty += r.Warehouse_Qty || 0;
-      grouped[r.article].Production_Qty += r.Production_Qty || 0;
-      grouped[r.article].Order_Qty += r.Order_Qty || 0;
-      grouped[r.article].Cart_Qty += r.Cart_Qty || 0;
-      grouped[r.article].Wishlist_Qty += r.Wishlist_Qty || 0;
-      grouped[r.article].Total_Available += r.Total_Available || 0;
-    }
-    finalResult = Object.values(grouped);
-  }
-
-  const filtered = search
-    ? finalResult.filter(r => Object.values(r).some(v => new RegExp(search, "i").test(String(v))))
-    : finalResult;
-
-  filtered.sort((a, b) => b.Total_Available - a.Total_Available);
+  const [agg] = await Stock.aggregate(pipeline).allowDiskUse(true);
+  const data = agg?.data || [];
+  const totalItems = agg?.totalCount?.[0]?.count || 0;
 
   return {
-    data: filtered.slice(skip, skip + limit),
+    data,
     pagination: {
       currentPage: page,
-      totalItems: filtered.length,
-      totalPages: Math.ceil(filtered.length / limit),
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
     },
   };
 };
@@ -464,16 +572,10 @@ exports.AddOrdertoCart = async ({ customer, location, items, schemesId, createdB
     if (!scheme) throw new Error("Scheme not found");
   }
 
-  // 3️⃣ Get aggregated stock
-  const { data: aggregatedStock } = await exports.getAggregatedStock();
-  if (!aggregatedStock || aggregatedStock.length === 0) throw new Error("No stock data found");
-
-  // 4️⃣ Stock lookup map
-  const stockMap = {};
-  aggregatedStock.forEach(stock => {
-    const key = `${stock.productId}_${stock.categoryId}`;
-    stockMap[key] = stock.Total_Available || 0;
-  });
+  // Stock availability is resolved AFTER the ordered variants are known, via a
+  // targeted lookup for only those productIds (see below). This replaces the old
+  // paginated aggregate (limit 10), which hid any article past the first page
+  // and made it wrongly look out of stock.
 
   // 5️⃣ Generate sales order number
   const lastCartOrder = await Cart.findOne().sort({ createdAt: -1 });
@@ -484,116 +586,119 @@ exports.AddOrdertoCart = async ({ customer, location, items, schemesId, createdB
   ) + 1;
   const salesOrderNo = `SO/${nextNo}`;
 
-  // 6️⃣ Process items
-  const confirmedOrderItems = [];
+  // 6️⃣ Resolve every ordered variant to concrete (product, category) pairs and
+  //    collect the productIds so availability can be looked up in ONE targeted
+  //    query instead of a paginated catalog scan.
+  const resolvedItems = [];
+  const productIdMap = new Map();
 
   for (const item of items) {
-    // if (!item.quantity || typeof item.quantity !== "number" || item.quantity < 5) {
-    //   throw new Error(
-    //     `Quantity for article ${item.article}, categoryCode ${item.categoryCode} must be at least 5`
-    //   );
-    // }
-
-// STRICT variant match. article + categoryCode + color + size + type + quality
-// must ALL be present and matched. A single color+size+categoryCode can have
-// multiple sub-documents differing only by type/quality (Soft/Hard/Common x
-// A/B). If type/quality are not enforced we resolve the FIRST such variant and
-// store the wrong categoryId, which then mismatches the production/stock/QR and
-// makes the order impossible to dispatch.
-if (
-  !item.article || !item.categoryCode || !item.color ||
-  !item.size || !item.type || !item.quality
-) {
-  throw new Error(
-    `Incomplete product details for article ${item.article || "?"}: ` +
-      `article, categoryCode, color, size, type and quality are all required.`
-  );
-}
-
-// A product variant is identified by the FULL combination:
-// article + categoryCode + color + size + type + quality. The same article
-// (e.g. MOZDI) can exist in more than one Product document, and each document
-// may carry a subdoc matching that combination. findOne() would grab an
-// arbitrary one, and if that copy has no warehouse/production stock the line
-// would wrongly look out of stock even though another copy holds the stock.
-// So resolve ALL matching (product, category) pairs and pick the one that
-// actually has stock in stockMap.
-const productRecords = await Product.find({
-  article: item.article,
-  category: {
-    $elemMatch: {
-      categoryCode: item.categoryCode,
-      color: { $regex: new RegExp(`^${item.color}$`, "i") }, // case-insensitive
-      size: { $regex: new RegExp(`^${item.size}$`, "i") },
-      type: { $regex: new RegExp(`^${item.type}$`, "i") },
-      quality: { $regex: new RegExp(`^${item.quality}$`, "i") }
+    // STRICT variant match. article + categoryCode + color + size + type +
+    // quality must ALL be present and matched. A single color+size+categoryCode
+    // can have multiple sub-documents differing only by type/quality
+    // (Soft/Hard/Common x A/B). If type/quality are not enforced we resolve the
+    // FIRST such variant and store the wrong categoryId, which then mismatches
+    // production/stock/QR and makes the order impossible to dispatch.
+    if (
+      !item.article || !item.categoryCode || !item.color ||
+      !item.size || !item.type || !item.quality
+    ) {
+      throw new Error(
+        `Incomplete product details for article ${item.article || "?"}: ` +
+          `article, categoryCode, color, size, type and quality are all required.`
+      );
     }
+
+    // The same article (e.g. MOZDI) can exist in more than one Product document,
+    // each possibly carrying a subdoc matching this combination. Resolve ALL
+    // matching (product, category) pairs and later pick the one that actually
+    // has stock, rather than an arbitrary findOne().
+    const productRecords = await Product.find({
+      article: item.article,
+      category: {
+        $elemMatch: {
+          categoryCode: item.categoryCode,
+          color: { $regex: new RegExp(`^${item.color}$`, "i") }, // case-insensitive
+          size: { $regex: new RegExp(`^${item.size}$`, "i") },
+          type: { $regex: new RegExp(`^${item.type}$`, "i") },
+          quality: { $regex: new RegExp(`^${item.quality}$`, "i") }
+        }
+      }
+    });
+
+    // Collect every (product, category) pair whose full combination matches.
+    const candidates = [];
+    for (const product of productRecords) {
+      const matchedCategory = (product.category || []).find(cat =>
+        cat.categoryCode === item.categoryCode &&
+        cat.color?.toLowerCase() === item.color.toLowerCase() &&
+        cat.size?.toLowerCase() === item.size.toLowerCase() &&
+        (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase()) &&
+        (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase())
+      );
+      if (!matchedCategory) continue;
+
+      candidates.push({
+        product,
+        matchedCategory,
+        key: `${product._id}_${matchedCategory._id}`,
+      });
+      productIdMap.set(String(product._id), product._id);
+    }
+
+    // Never create an order line with an unresolved / wrong variant.
+    if (candidates.length === 0) {
+      throw new Error(
+        `No matching product variant for article ${item.article}, ` +
+          `categoryCode ${item.categoryCode}, color ${item.color}, size ${item.size}, ` +
+          `type ${item.type}, quality ${item.quality}.`
+      );
+    }
+
+    resolvedItems.push({ item, candidates });
   }
-});
 
-// Collect every (product, category) pair whose full combination matches.
-const candidates = [];
-for (const product of productRecords) {
-  const matchedCategory = (product.category || []).find(cat =>
-    cat.categoryCode === item.categoryCode &&
-    cat.color?.toLowerCase() === item.color.toLowerCase() &&
-    cat.size?.toLowerCase() === item.size.toLowerCase() &&
-    (cat.type || []).some(t => t?.toLowerCase() === item.type.toLowerCase()) &&
-    (cat.quality || []).some(q => q?.toLowerCase() === item.quality.toLowerCase())
-  );
-  if (!matchedCategory) continue;
+  // 7️⃣ Targeted availability lookup for ONLY the ordered articles. No
+  //    pagination, so an article is never hidden on a later "page".
+  const stockMap = await exports.getStockAvailabilityMap([...productIdMap.values()]);
 
-  const key = `${product._id}_${matchedCategory._id}`;
-  candidates.push({
-    product,
-    matchedCategory,
-    key,
-    availableQty: stockMap[key] ?? 0,
-  });
-}
+  // 8️⃣ Choose the fulfilling variant per item and validate the quantity.
+  const confirmedOrderItems = [];
 
-// Never create an order line with an unresolved / wrong variant.
-if (candidates.length === 0) {
-  throw new Error(
-    `No matching product variant for article ${item.article}, ` +
-      `categoryCode ${item.categoryCode}, color ${item.color}, size ${item.size}, ` +
-      `type ${item.type}, quality ${item.quality}.`
-  );
-}
+  for (const { item, candidates } of resolvedItems) {
+    const withQty = candidates.map(c => ({ ...c, availableQty: stockMap[c.key] ?? 0 }));
 
-// Prefer the duplicate that can fulfil the requested quantity; otherwise the
-// one with the most stock (for an accurate "available" figure in the error).
-const chosen =
-  candidates.find(c => c.availableQty >= item.quantity && item.quantity > 0) ||
-  candidates.slice().sort((a, b) => b.availableQty - a.availableQty)[0];
+    // Prefer the duplicate that can fulfil the requested quantity; otherwise the
+    // one with the most stock (for an accurate "available" figure in the error).
+    const chosen =
+      withQty.find(c => c.availableQty >= item.quantity && item.quantity > 0) ||
+      withQty.slice().sort((a, b) => b.availableQty - a.availableQty)[0];
 
-const { matchedCategory } = chosen;
-const productRecord = chosen.product;
-const matchedCategoryId = matchedCategory._id;
-const imageUrl = matchedCategory.image?.[0] || null;
-const dbarticleocode = matchedCategory.articleCode;
-const availableQty = chosen.availableQty;
+    const { matchedCategory } = chosen;
+    const productRecord = chosen.product;
+    const matchedCategoryId = matchedCategory._id;
+    const imageUrl = matchedCategory.image?.[0] || null;
+    const dbarticleocode = matchedCategory.articleCode;
+    const availableQty = chosen.availableQty;
 
-// No Wishlist fallback: if the requested quantity cannot be fulfilled from
-// available stock, reject the whole request with a product/quantity-specific
-// error so the sales person adjusts the order.
-if (!(availableQty > 0) || item.quantity > availableQty) {
-  throw new Error(
-    `Insufficient stock for ${item.article} ` +
-      `(${item.color}, ${item.size}, ${item.type} ${item.quality}): ` +
-      `requested ${item.quantity}, available ${availableQty}.`
-  );
-}
+    // No Wishlist fallback: if the requested quantity cannot be fulfilled from
+    // available stock, reject the whole request with a product/quantity-specific
+    // error so the sales person adjusts the order.
+    if (!(availableQty > 0) || item.quantity > availableQty) {
+      throw new Error(
+        `Insufficient stock for ${item.article} ` +
+          `(${item.color}, ${item.size}, ${item.type} ${item.quality}): ` +
+          `requested ${item.quantity}, available ${availableQty}.`
+      );
+    }
 
-const itemWithImage = {
-  ...item,
-  productId: productRecord._id,
-  categoryId: matchedCategoryId,
-  articleCode: dbarticleocode,
-  image: imageUrl ? [imageUrl] : [],
-};
-
-    confirmedOrderItems.push(itemWithImage);
+    confirmedOrderItems.push({
+      ...item,
+      productId: productRecord._id,
+      categoryId: matchedCategoryId,
+      articleCode: dbarticleocode,
+      image: imageUrl ? [imageUrl] : [],
+    });
   }
 
   // 7️⃣ Create Cart entry
