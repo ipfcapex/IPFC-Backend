@@ -4,29 +4,34 @@ const { requireAuth, requireAdminRoles } = require('../middleware/auth.authoriza
 
 const router = express.Router();
 
+// Read access: Admin, Administrator and all operational managers
+const canView = requireAdminRoles('Admin', 'Administrator', 'Inventory Manager', 'Warehouse Manager', 'Packing Reporter', 'Sales Person');
+// Write access (create financial year): Admin only
+const canManage = requireAdminRoles('Admin', 'Administrator');
+
 // Report routes
-router.get('/sell-report', ReportAndDashbordController.getsellReports);
-router.get('/customers-report', ReportAndDashbordController.getCustomerReport);
-router.get('/warehouse-report', ReportAndDashbordController.getwarehouseStockReport);
+router.get('/sell-report', requireAuth, canView, ReportAndDashbordController.getsellReports);
+router.get('/customers-report', requireAuth, canView, ReportAndDashbordController.getCustomerReport);
+router.get('/warehouse-report', requireAuth, canView, ReportAndDashbordController.getwarehouseStockReport);
 
 //Dashboard routes
-router.get('/sell-dashboard', ReportAndDashbordController.getSellDashboard);
-router.get('/product-dashboard', ReportAndDashbordController.getsTotalsProductions);
-router.get('/inventory-dashboard', ReportAndDashbordController.getInventoryDashboard);
-router.get('/account-dashboard', ReportAndDashbordController.getaccountSummery);
-router.get('/warehouse-dashboard', ReportAndDashbordController.getwarehouseSummery);
-router.get('/production-dashboard', ReportAndDashbordController.getproductionSummery);
-router.get('/top-sales', ReportAndDashbordController.gettopsell);
-router.get('/low-stock', ReportAndDashbordController.getLowStockAlerts);
+router.get('/sell-dashboard', requireAuth, canView, ReportAndDashbordController.getSellDashboard);
+router.get('/product-dashboard', requireAuth, canView, ReportAndDashbordController.getsTotalsProductions);
+router.get('/inventory-dashboard', requireAuth, canView, ReportAndDashbordController.getInventoryDashboard);
+router.get('/account-dashboard', requireAuth, canView, ReportAndDashbordController.getaccountSummery);
+router.get('/warehouse-dashboard', requireAuth, canView, ReportAndDashbordController.getwarehouseSummery);
+router.get('/production-dashboard', requireAuth, canView, ReportAndDashbordController.getproductionSummery);
+router.get('/top-sales', requireAuth, canView, ReportAndDashbordController.gettopsell);
+router.get('/low-stock', requireAuth, canView, ReportAndDashbordController.getLowStockAlerts);
 
 //Graphical data Representation on Dashboard
-router.get('/stock-graph', ReportAndDashbordController.getStockGraphData);
-router.get('/production-graph', ReportAndDashbordController.getProductionGraph);
-router.get('/sales-graph', ReportAndDashbordController.getSalesGraphatDelivery);
+router.get('/stock-graph', requireAuth, canView, ReportAndDashbordController.getStockGraphData);
+router.get('/production-graph', requireAuth, canView, ReportAndDashbordController.getProductionGraph);
+router.get('/sales-graph', requireAuth, canView, ReportAndDashbordController.getSalesGraphatDelivery);
 
 
-router.post('/filterStock', ReportAndDashbordController.getStockReport);
-router.get('/financial-years', ReportAndDashbordController.getFinancialYears);
-router.post('/financial-years', ReportAndDashbordController.createFinancialYear);
+router.post('/filterStock', requireAuth, canView, ReportAndDashbordController.getStockReport);
+router.get('/financial-years', requireAuth, canView, ReportAndDashbordController.getFinancialYears);
+router.post('/financial-years', requireAuth, canManage, ReportAndDashbordController.createFinancialYear);
 
 module.exports = router;

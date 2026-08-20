@@ -5,6 +5,7 @@ const cors = require("cors");
 const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
 const connectDB = require("./config/db");
+const mongoSanitize = require("./middleware/sanitize.Middleware");
 const routes = require("./routes");
 const session = require("express-session");
 const http = require("http");
@@ -97,6 +98,10 @@ app.use(
 
 // Middleware: JSON body parser
 app.use(express.json());
+
+// Middleware: Strip MongoDB operator keys ($gt, $ne, dotted paths) from all
+// request input to prevent NoSQL injection into query filters.
+app.use(mongoSanitize);
 
 // Middleware: Logging (development only)
 if (process.env.NODE_ENV === "development") {

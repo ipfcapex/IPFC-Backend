@@ -19,14 +19,22 @@
 // module.exports = upload;
 
 const multer = require('multer');
+const path = require('path');
 const storage = multer.memoryStorage();
 
+// Raster formats only. SVG is intentionally excluded: it is an XML document
+// that can carry <script>/onload payloads (stored XSS). The mimetype below is
+// client-supplied and spoofable, so this is only a first gate -- the actual
+// content is verified by magic bytes in aws.Middleware.js before it is stored.
+const ALLOWED_EXT = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'];
+
 const fileFilter = (req, file, cb) => {
-  if (file.mimetype.startsWith('image/')) {
-    cb(null, true);
-  } else {
-    cb(new Error('Only images are allowed!'), false);
+  const ext = path.extname(file.originalname || '').toLowerCase();
+  const isRasterMime = /^image\/(png|jpe?g|webp|gif|bmp)$/i.test(file.mimetype);
+  if (!ALLOWED_EXT.includes(ext) || !isRasterMime) {
+    return cb(new Error('Only PNG, JPG, JPEG, WEBP, GIF or BMP images are allowed'), false);
   }
+  cb(null, true);
 };
 
 const upload = multer({ 

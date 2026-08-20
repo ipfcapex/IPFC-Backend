@@ -1,29 +1,31 @@
 const express = require("express");
 const router = express.Router();
 const { stockController } = require("../controllers");
-const { requireAuth } = require("../middleware/auth.authorization");
+const { requireAuth, requireAdminRoles } = require("../middleware/auth.authorization");
 
-router.post("/add", stockController.createStockbyQr);
-router.get("/", stockController.getAllStock);
-router.get("/get", stockController.getAllStockss);
-router.get("/summary/in-out", stockController.getStockInOutSummary);
-router.get("/:id", stockController.getStockById);
+const stockRoles = requireAdminRoles('Admin', 'Administrator', 'Inventory Manager', 'Warehouse Manager');
 
-router.get("/warehouse/:warehouseId", stockController.getStockByWarehouseController);
-router.put("/:id", stockController.updateStock);
+router.post("/add", requireAuth, stockRoles, stockController.createStockbyQr);
+router.get("/", requireAuth, stockRoles, stockController.getAllStock);
+router.get("/get", requireAuth, stockRoles, stockController.getAllStockss);
+router.get("/summary/in-out", requireAuth, stockRoles, stockController.getStockInOutSummary);
+router.get("/:id", requireAuth, stockRoles, stockController.getStockById);
 
-//get stock by Pn number 
+router.get("/warehouse/:warehouseId", requireAuth, stockRoles, stockController.getStockByWarehouseController);
+router.put("/:id", requireAuth, stockRoles, stockController.updateStock);
+
+//get stock by Pn number
 
 //Add Scanned at waherouse Record
-router.put("/scanned/:id", stockController.addScanRecordss);
+router.put("/scanned/:id", requireAuth, stockRoles, stockController.addScanRecordss);
 // add delivery status
-router.put("/delivery/:id", stockController.addDeliveryRecordss);
-router.delete("/:id", stockController.softDeleteStock);
-router.post("/scan-qr", stockController.scanAndDispatch);
+router.put("/delivery/:id", requireAuth, stockRoles, stockController.addDeliveryRecordss);
+router.delete("/:id", requireAuth, stockRoles, stockController.softDeleteStock);
+router.post("/scan-qr", requireAuth, stockRoles, stockController.scanAndDispatch);
 
-//Bypass stock 
-router.post("/bypasstowarehouse", stockController.bypassScanAndAddStock);
-router.post("/bypasstodelivery", stockController.bypassDeliveryController);
+//Bypass stock
+router.post("/bypasstowarehouse", requireAuth, stockRoles, stockController.bypassScanAndAddStock);
+router.post("/bypasstodelivery", requireAuth, stockRoles, stockController.bypassDeliveryController);
 
 
 module.exports = router;

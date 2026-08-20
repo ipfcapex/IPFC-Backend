@@ -5,7 +5,6 @@ const fs = require('fs');
 const path = require('path');
 const csv = require('csv-parser');
 const createCsvWriter = require('csv-writer').createObjectCsvWriter;
-const cloudinary = require("../utils/cloudinary")
 const { uploadToS3 } = require("../middleware/aws.Middleware"); // your S3 helper
 require('dotenv').config();
 

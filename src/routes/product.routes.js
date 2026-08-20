@@ -27,7 +27,7 @@ router.put('/:id/update',imageuploads.single("image"),requireAuth, requireAdminR
 router.delete('/:id/',requireAuth, requireAdminRoles('Admin', 'Administrator','Sales Person','Packing Reporter','Inventory Manager'), productController.deleteProduct);
 
 // upload Article using csv 
-router.post('/upload-csv', upload.single('file'), productController.uploadCSVController);
+router.post('/upload-csv', requireAuth, requireAdminRoles('Admin', 'Administrator', 'Inventory Manager'), upload.single('file'), productController.uploadCSVController);
 
 //Routes to add Article code(Note: this is current not in use) 
 router.post('/addcode', productController.addArticleCodeToProduct);
@@ -42,7 +42,7 @@ router.post('/addcodebytype', productController.addArticleCodetoSub);
 router.put('/category/:id', productController.updatearticlecode);
 
 //csv file upload for article code 
-router.post('/addcode/csv',upload.single('file'), productController.uploadarticlecodeCSVController);
+router.post('/addcode/csv', requireAuth, requireAdminRoles('Admin', 'Administrator', 'Inventory Manager'), upload.single('file'), productController.uploadarticlecodeCSVController);
 
 //Delete hole article code(Note: this is current not in use)
 router.delete('/deletecode/:id', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager'), productController.deleteArticleCodesss)
