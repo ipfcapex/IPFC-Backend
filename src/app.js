@@ -42,6 +42,7 @@ const allowedOrigins = [
   "https://apex-shoes-deployed.vercel.app",
   "https://www.apexshoes.org",
   "https://apexshoes.org",
+  "https://ipfcapex.netlify.app",
 ];
 
 const io = new Server(server, {
