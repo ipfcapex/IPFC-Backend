@@ -682,6 +682,8 @@ exports.findandmarkdone = async (id, { schemesId, acceptedQuantities, partialOrd
     }
     // Remove items with 0 remaining quantity
     wishlist.WishList = wishlist.WishList.filter(it => Number(it.quantity) > 0);
+    // Reset stock time so remaining quantity is eligible for future production allocations
+    wishlist.wishlistStockTime = null;
     await wishlist.save();
   } else {
     // Full order — archive and delete the active wishlist.

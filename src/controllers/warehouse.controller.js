@@ -26,16 +26,20 @@ exports.create = async (req, res, next) => {
 
 exports.getAll = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
+    const pageNum = parseInt(req.query.page, 10);
+    const limitNum = parseInt(req.query.limit, 10);
+    const page = !isNaN(pageNum) && pageNum > 0 ? pageNum : 1;
+    const limit = !isNaN(limitNum) && limitNum > 0 ? limitNum : 10;
 
     // Force search into a clean string
     let search = "";
     if (typeof req.query.search === "string") {
       search = req.query.search.trim();
+      if (search === "undefined" || search === "null") search = "";
     } else if (req.query.search && typeof req.query.search === "object") {
       // if client mistakenly sends ?search[name]=value
       search = Object.values(req.query.search)[0] || "";
+      if (search === "undefined" || search === "null") search = "";
     }
 
     const result = await warehouseService.getWarehouses(page, limit, search);

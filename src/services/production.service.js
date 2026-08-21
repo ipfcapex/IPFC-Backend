@@ -117,9 +117,15 @@ const attachCategoryDetail = (prod) => {
 // is only activated later, during the production stock-in scan, once real
 // stock is scanned in (see activateWishlistTimersFromScan).
 const applyProductionToWishlists = async (productionData) => {
-  const { productId, categoryId } = productionData;
+  const { productId, categoryId, productionQuantity } = productionData;
 
-  // Find all relevant wishlists by the stored ObjectIds, sorted FIFO
+  let remainingProdQty = Number(productionQuantity) || 0;
+  if (remainingProdQty <= 0) return [];
+
+  const oneYearAgo = new Date();
+  oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+
+  // Find all relevant wishlists created within 1 year (<= 1 year old), sorted FIFO
   const wishlists = await Wishlist.find({
     WishList: {
       $elemMatch: {
@@ -128,31 +134,84 @@ const applyProductionToWishlists = async (productionData) => {
       }
     },
     isActive: true,
-    wishlistStockTime: null
+    wishlistStockTime: null,
+    createdAt: { $gte: oneYearAgo }
   }).sort({ createdAt: 1 }); // Oldest first
 
-  console.log(`🔍 applyProductionToWishlists: found ${wishlists.length} matching wishlist(s) for productId=${productId}, categoryId=${categoryId}`);
+  console.log(`🔍 applyProductionToWishlists: found ${wishlists.length} matching wishlist(s) for productId=${productId}, categoryId=${categoryId}, productionQuantity=${remainingProdQty}`);
+
+  // Fetch all active production records to check if any of these wishlists have already been allocated
+  // quantity in pending (unscanned or earlier) productions.
+  const activeProductions = await Production.find({
+    isActive: true,
+    "assignwishlistprod.wishlistId": { $in: wishlists.map(w => w._id) }
+  }).select("assignwishlistprod");
+
+  const alreadyAssignedMap = {};
+  for (const prod of activeProductions) {
+    for (const a of (prod.assignwishlistprod || [])) {
+      if (a.wishlistId) {
+        const wIdStr = String(a.wishlistId._id || a.wishlistId);
+        alreadyAssignedMap[wIdStr] = (alreadyAssignedMap[wIdStr] || 0) + (a.assignedQuantity || 0);
+      }
+    }
+  }
 
   // Assignments to persist on the Production record: which wishlists this
-  // production is allocated to, plus the required quantities (FIFO order).
+  // production is allocated to, plus the assigned & required quantities (FIFO order).
   const assignments = [];
 
   for (const wishlist of wishlists) {
+    if (remainingProdQty <= 0) break;
+
     // Total quantity requested for this wishlist for the given productId + categoryId
     const totalWishlistQty = wishlist.WishList
       .filter(i =>
-        String(i.productId) === String(productId) &&
-        String(i.categoryId) === String(categoryId)
+        String(i.productId?._id || i.productId) === String(productId) &&
+        String(i.categoryId?._id || i.categoryId) === String(categoryId)
       )
       .reduce((sum, i) => sum + i.quantity, 0);
 
     if (totalWishlistQty === 0) continue;
 
-    assignments.push({
-      wishlistId: wishlist._id,
-      assignedQuantity: totalWishlistQty,
-      requiredQuantity: totalWishlistQty,
-    });
+    // Determine how much is still needed for this wishlist after subtracting previous allocations
+    const alreadyAssigned = alreadyAssignedMap[String(wishlist._id)] || 0;
+    const effectiveReqQty = Math.max(0, totalWishlistQty - alreadyAssigned);
+
+    if (effectiveReqQty === 0) continue;
+
+    // Allocation Logic:
+    // 1. Full Allocation: Production has enough quantity to cover 100% of effectiveReqQty
+    if (remainingProdQty >= effectiveReqQty) {
+      const assignedQty = effectiveReqQty;
+      remainingProdQty -= assignedQty;
+
+      assignments.push({
+        wishlistId: wishlist._id,
+        assignedQuantity: assignedQty,
+        requiredQuantity: totalWishlistQty,
+      });
+    } else {
+      // 2. Partial Allocation: Remaining production quantity is less than effectiveReqQty.
+      // Check if remaining production quantity is >= 50% of effectiveReqQty.
+      const minRequiredThreshold = 0.5 * effectiveReqQty;
+
+      if (remainingProdQty >= minRequiredThreshold) {
+        const assignedQty = remainingProdQty;
+        remainingProdQty = 0;
+
+        assignments.push({
+          wishlistId: wishlist._id,
+          assignedQuantity: assignedQty,
+          requiredQuantity: totalWishlistQty,
+        });
+
+        break; // Remaining production quantity is exhausted
+      } else {
+        // Remaining production quantity is < 50% of effectiveReqQty -> Skip this wishlist!
+        console.log(`⚠️ Skipping wishlist ${wishlist._id}: remaining quantity (${remainingProdQty}) is < 50% of required quantity (${effectiveReqQty})`);
+      }
+    }
   }
 
   return assignments;
@@ -228,8 +287,25 @@ const activateWishlistTimersFromScan = async (production) => {
   let covered = production.stockinQuantity || 0;
 
   for (const a of assignments) {
-    const need = a.requiredQuantity || 0;
-    if (covered < need) break; // FIFO: stop at the first wishlist we can't fully cover
+    const need = a.assignedQuantity || a.requiredQuantity || 0;
+    if (need <= 0) continue;
+
+    // Check if the wishlist exists and is still active (not archived/rejected)
+    const existingWishlist = await Wishlist.findById(a.wishlistId);
+    if (!existingWishlist || !existingWishlist.isActive) {
+      // Wishlist was archived/rejected/deleted, skip reserving stock for it
+      console.log(`⚠️ Skipping wishlist ${a.wishlistId} during scan-in: wishlist was archived or rejected`);
+      continue;
+    }
+
+    if (existingWishlist.wishlistStockTime !== null) {
+      // Already activated in a previous scan — subtract its reserved quantity
+      covered -= need;
+      continue;
+    }
+
+    // Timer not started yet: check if scanned stock covers the assigned quantity
+    if (covered < need) break; // FIFO: stop at the first wishlist we can't cover
 
     covered -= need;
     // findOneAndUpdate with the wishlistStockTime:null filter guarantees we only
@@ -388,6 +464,7 @@ exports.createProduct = async (data) => {
     const assignwishlistprod = await applyProductionToWishlists({
       productId: productByArticle._id,
       categoryId: matchedCategory._id,
+      productionQuantity: data.productionQuantity,
     });
 
     if (assignwishlistprod?.length) {

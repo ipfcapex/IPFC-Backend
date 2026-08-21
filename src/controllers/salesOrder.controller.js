@@ -695,24 +695,31 @@ exports.getArticleDetailsByName = async (req, res) => {
 // GET /sale-order/review-list — Review List Carton Quantity Verification (Factory -> Warehouse)
 exports.getReviewList = async (req, res) => {
   try {
-    const {
-      page = 1,
-      limit = 10,
-      search = "",
-      startDate = "",
-      endDate = "",
-      status = "ALL",
-      type = "",
-    } = req.query;
+    const pageNum = parseInt(req.query.page, 10);
+    const limitNum = parseInt(req.query.limit, 10);
+    const page = !isNaN(pageNum) && pageNum > 0 ? pageNum : 1;
+    const limit = !isNaN(limitNum) && limitNum > 0 ? limitNum : 10;
+
+    const cleanStr = (val, fallback = "") => {
+      if (!val || typeof val !== "string") return fallback;
+      const s = val.trim();
+      return s === "undefined" || s === "null" ? fallback : s;
+    };
+
+    const search = cleanStr(req.query.search, "");
+    const startDate = cleanStr(req.query.startDate, "");
+    const endDate = cleanStr(req.query.endDate, "");
+    const status = cleanStr(req.query.status, "ALL");
+    const type = cleanStr(req.query.type, "");
 
     const result = await orderService.getReviewListOrders({
       page,
       limit,
-      search: search?.trim() || "",
-      startDate: startDate?.trim() || "",
-      endDate: endDate?.trim() || "",
-      status: status?.trim() || "ALL",
-      type: type?.trim() || "",
+      search,
+      startDate,
+      endDate,
+      status,
+      type,
     });
 
     return res.status(200).json(result);

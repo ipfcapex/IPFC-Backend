@@ -11,7 +11,7 @@ router.get('/rating', requireAuth, requireAdminRoles('Admin', 'Administrator'), 
 // Get wishlist analytics (yearly/financial-year reporting)
 router.get('/analytics', requireAuth, requireAdminRoles('Admin', 'Administrator'), WishlistController.getWishlistAnalytics);
 //get wishlist for sales person
-router.get("/get/bysalesperson",requireAuth, requireAdminRoles('Sales Person'), WishlistController.getWishlistBySalesperson);
+router.get("/get/bysalesperson", requireAuth, requireAdminRoles('Sales Person', 'Admin', 'Administrator'), WishlistController.getWishlistBySalesperson);
 router.get('/:id', WishlistController.getWishlistById);
 router.put('/:id', WishlistController.updateWishlistById);
 //get is accept and delete for order
