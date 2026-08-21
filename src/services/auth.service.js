@@ -765,6 +765,8 @@ const refreshAuth = async (refreshToken) => {
   const user = await User.findById(decoded.id).populate("warehouses", "name location");
   if (!user) throw new ApiError(httpStatus.UNAUTHORIZED, "User not found");
 
+  console.log(`🔄 Refreshing access token for user: ${user.email}`);
+
   // Rotate: the used refresh token is single-use
   await tokenDoc.deleteOne();
 
