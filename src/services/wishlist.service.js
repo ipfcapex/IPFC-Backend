@@ -50,14 +50,38 @@ exports.enrichWishlistsWithAssignedQuantity = enrichWishlistsWithAssignedQuantit
 // when the article was never prepared, or "Expired" when it has been
 // unfulfilled for >= 1 year.
 const computeActiveWishlistStatus = (wishlist) => {
-  // Article was prepared (stock time applied) — existing flow handles this
-  if (wishlist.wishlistStockTime) return null;
-
   const createdAt = new Date(wishlist.originalCreatedAt || wishlist.createdAt);
   const oneYearAgo = new Date();
   oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
 
-  return createdAt <= oneYearAgo ? 'Expired' : 'Not Fulfilled';
+  if (createdAt <= oneYearAgo) return 'Expired';
+  if (wishlist.wishlistStockTime) return null;
+  return 'Not Fulfilled';
+};
+
+/**
+ * Helper to normalize status / wishAction keys case-insensitively with typo tolerance.
+ * Handles "Accepted", "Partial", "Rejected" (or "rejest", "reject"), "Expired" (or "expire"), "Timeout" (or "timout"), "Not Fulfilled".
+ */
+const normalizeWishAction = (rawAction, isPartialOrder = false) => {
+  if (isPartialOrder) return "Partial";
+  if (!rawAction) return "Not Fulfilled";
+  const str = String(rawAction).trim().toLowerCase();
+  if (str === "partial" || str === "partially") return "Partial";
+  if (
+    str === "accepted" ||
+    str === "accept" ||
+    str === "fulfilled" ||
+    str === "full filled" ||
+    str === "fullfilled" ||
+    str === "full order"
+  )
+    return "Accepted";
+  if (str === "rejected" || str === "reject" || str === "rejest" || str === "rejestation") return "Rejected";
+  if (str === "expired" || str === "expire" || str === "expirydate") return "Expired";
+  if (str === "timeout" || str === "timout" || str === "time out") return "Timeout";
+  if (str === "not fulfilled" || str === "notfulfilled" || str === "unfulfilled") return "Not Fulfilled";
+  return rawAction;
 };
 
 /**
@@ -180,7 +204,8 @@ exports.AddToWishlist = async ({
     WishList: wishlistItems,
     createdBy,
     description: description || "",
-    isActive: true
+    isActive: true,
+    wishAction: "Not Fulfilled",
   };
 
   if (scheme) wishlistData.scheme = scheme._id;
@@ -263,12 +288,12 @@ exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "", ext
   // >= 1 year, else "Not Fulfilled".
   const activeWishActionExpr = {
     $cond: [
-      "$wishlistStockTime",
-      null,
+      { $lte: [{ $ifNull: ["$originalCreatedAt", "$createdAt"] }, oneYearAgo] },
+      "Expired",
       {
         $cond: [
-          { $lte: [{ $ifNull: ["$originalCreatedAt", "$createdAt"] }, oneYearAgo] },
-          "Expired",
+          "$wishlistStockTime",
+          null,
           "Not Fulfilled",
         ],
       },
@@ -592,7 +617,7 @@ exports.archiveWishlist = async (wishlist, action, extra = {}) => {
 // any accepted qty < requested qty, the order is marked as a partial order and
 // `partialOrderReason` is mandatory. The remaining quantity stays on the active
 // wishlist for future ordering; if the order is full, the wishlist is archived.
-exports.findandmarkdone = async (id, { schemesId, acceptedQuantities, partialOrderReason } = {}) => {
+exports.findandmarkdone = async (id, { schemesId, acceptedQuantities, partialOrderReason, partialReasonCategory, partialOrderExplanation } = {}) => {
   if (!id) throw new Error("Wishlist ID is required");
 
   const wishlist = await Wishlist.findById(id);
@@ -675,6 +700,8 @@ exports.findandmarkdone = async (id, { schemesId, acceptedQuantities, partialOrd
     acceptedQuantity: totalAccepted,
     remainingQuantity: totalRemaining,
     isPartialOrder: isPartial,
+    partialReasonCategory: isPartial ? (partialReasonCategory || null) : null,
+    partialOrderExplanation: isPartial ? (partialOrderExplanation || null) : null,
     partialOrderReason: isPartial ? partialOrderReason : null,
     fulfillmentDate: now,
     waitingTimeDays,
@@ -709,7 +736,7 @@ exports.findandmarkdone = async (id, { schemesId, acceptedQuantities, partialOrd
       description: wishlist.description,
       scheme: wishlist.scheme,
       wishlistStockTime: wishlist.wishlistStockTime,
-      wishAction: "Accepted",
+      wishAction: "Partial",
       actionAt: now,
       originalCreatedAt: wishlist.createdAt,
       originalUpdatedAt: wishlist.updatedAt,
@@ -769,13 +796,23 @@ exports.findandmarkdone = async (id, { schemesId, acceptedQuantities, partialOrd
 
 // Reject a wishlist: archive the whole record to WishlistHistory as "Rejected"
 // and remove it from the active wishlist collection.
-exports.softDeleteWishlistById = async (id) => {
+exports.softDeleteWishlistById = async (id, { rejectionReasonCategory, rejectionOrderExplanation, rejectionReason, partialReasonCategory, partialOrderExplanation, partialOrderReason } = {}) => {
   if (!id) throw new Error("Wishlist ID is required");
 
   const wishlist = await Wishlist.findById(id);
   if (!wishlist) throw new Error("Wishlist not found");
 
-  return await exports.archiveWishlist(wishlist, "Rejected");
+  const cat = rejectionReasonCategory || partialReasonCategory || null;
+  const exp = rejectionOrderExplanation || partialOrderExplanation || null;
+  const reason = rejectionReason || partialOrderReason || (cat === 'Other' ? exp : (exp ? `${cat} - ${exp}` : cat));
+
+  const extra = {
+    rejectionReasonCategory: cat,
+    rejectionOrderExplanation: exp,
+    rejectionReason: reason,
+  };
+
+  return await exports.archiveWishlist(wishlist, "Rejected", extra);
 };
 
 // Export the helper so the controller (which has its own inline query for the
@@ -831,8 +868,8 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
 
   // Combine all wishlist documents
   const allDocs = [
-    ...activeDocs.map((d) => ({ ...d, _isAccepted: false })),
-    ...historyDocs.map((d) => ({ ...d, _isAccepted: d.wishAction === "Accepted" })),
+    ...activeDocs.map((d) => ({ ...d, isHistory: false })),
+    ...historyDocs.map((d) => ({ ...d, isHistory: true })),
   ];
 
   const salespersonMap = new Map();
@@ -841,6 +878,8 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
 
   let overallTotalWishlistQty = 0;
   let overallAcceptedQty = 0;
+  let overallPartialQty = 0;
+  let overallNeglectedQty = 0;
   let overallWishlistCount = allDocs.length;
   let overallAcceptedCount = 0;
 
@@ -853,13 +892,42 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
     const cName = doc.customer?.name || "Unknown Customer";
     const cPhone = doc.customer?.phone || "";
 
-    const qty = (doc.WishList || []).reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
-    const isAccepted = Boolean(doc._isAccepted);
-    const accQty = isAccepted ? qty : 0;
+    const totalQty = doc.requestedQuantity > 0
+      ? doc.requestedQuantity
+      : (doc.WishList || []).reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
 
-    overallTotalWishlistQty += qty;
+    let accQty = 0;
+    let partQty = 0;
+    let negQty = 0;
+
+    if (doc.isHistory || doc.wishAction) {
+      const normAction = normalizeWishAction(doc.wishAction, doc.isPartialOrder);
+      if (normAction === "Accepted") {
+        accQty = doc.acceptedQuantity > 0 ? doc.acceptedQuantity : totalQty;
+        partQty = 0;
+        negQty = 0;
+      } else if (normAction === "Partial") {
+        accQty = 0;
+        partQty = doc.acceptedQuantity || 0;
+        negQty = doc.remainingQuantity > 0 ? doc.remainingQuantity : Math.max(0, totalQty - partQty);
+      } else {
+        // Rejected / Expired / Timeout / Not Fulfilled
+        accQty = 0;
+        partQty = 0;
+        negQty = 0;
+      }
+    } else {
+      // Active pending wishlist
+      accQty = 0;
+      partQty = 0;
+      negQty = 0;
+    }
+
+    overallTotalWishlistQty += totalQty;
     overallAcceptedQty += accQty;
-    if (isAccepted) overallAcceptedCount += 1;
+    overallPartialQty += partQty;
+    overallNeglectedQty += negQty;
+    if (accQty > 0 || partQty > 0) overallAcceptedCount += 1;
 
     // 1. Detailed map (salesperson + customer)
     const detailKey = `${sId}___${cId}`;
@@ -873,15 +941,19 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
         customerPhone: cPhone,
         totalWishlistQty: 0,
         acceptedQty: 0,
+        partialQty: 0,
+        neglectedQty: 0,
         wishlistCount: 0,
         acceptedCount: 0,
       });
     }
     const detailItem = detailMap.get(detailKey);
-    detailItem.totalWishlistQty += qty;
+    detailItem.totalWishlistQty += totalQty;
     detailItem.acceptedQty += accQty;
+    detailItem.partialQty += partQty;
+    detailItem.neglectedQty += negQty;
     detailItem.wishlistCount += 1;
-    if (isAccepted) detailItem.acceptedCount += 1;
+    if (accQty > 0 || partQty > 0) detailItem.acceptedCount += 1;
 
     // 2. Salesperson map
     if (!salespersonMap.has(sId)) {
@@ -891,16 +963,20 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
         salespersonEmail: sEmail,
         totalWishlistQty: 0,
         acceptedQty: 0,
+        partialQty: 0,
+        neglectedQty: 0,
         wishlistCount: 0,
         acceptedCount: 0,
         customerMap: new Map(),
       });
     }
     const sItem = salespersonMap.get(sId);
-    sItem.totalWishlistQty += qty;
+    sItem.totalWishlistQty += totalQty;
     sItem.acceptedQty += accQty;
+    sItem.partialQty += partQty;
+    sItem.neglectedQty += negQty;
     sItem.wishlistCount += 1;
-    if (isAccepted) sItem.acceptedCount += 1;
+    if (accQty > 0 || partQty > 0) sItem.acceptedCount += 1;
     if (!sItem.customerMap.has(cId)) {
       sItem.customerMap.set(cId, {
         customerId: cId,
@@ -908,15 +984,19 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
         customerPhone: cPhone,
         totalWishlistQty: 0,
         acceptedQty: 0,
+        partialQty: 0,
+        neglectedQty: 0,
         wishlistCount: 0,
         acceptedCount: 0,
       });
     }
     const sCustItem = sItem.customerMap.get(cId);
-    sCustItem.totalWishlistQty += qty;
+    sCustItem.totalWishlistQty += totalQty;
     sCustItem.acceptedQty += accQty;
+    sCustItem.partialQty += partQty;
+    sCustItem.neglectedQty += negQty;
     sCustItem.wishlistCount += 1;
-    if (isAccepted) sCustItem.acceptedCount += 1;
+    if (accQty > 0 || partQty > 0) sCustItem.acceptedCount += 1;
 
     // 3. Customer map
     if (!customerMap.has(cId)) {
@@ -926,16 +1006,20 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
         customerPhone: cPhone,
         totalWishlistQty: 0,
         acceptedQty: 0,
+        partialQty: 0,
+        neglectedQty: 0,
         wishlistCount: 0,
         acceptedCount: 0,
         salespersonMap: new Map(),
       });
     }
     const cItem = customerMap.get(cId);
-    cItem.totalWishlistQty += qty;
+    cItem.totalWishlistQty += totalQty;
     cItem.acceptedQty += accQty;
+    cItem.partialQty += partQty;
+    cItem.neglectedQty += negQty;
     cItem.wishlistCount += 1;
-    if (isAccepted) cItem.acceptedCount += 1;
+    if (accQty > 0 || partQty > 0) cItem.acceptedCount += 1;
     if (!cItem.salespersonMap.has(sId)) {
       cItem.salespersonMap.set(sId, {
         salespersonId: sId,
@@ -943,22 +1027,28 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
         salespersonEmail: sEmail,
         totalWishlistQty: 0,
         acceptedQty: 0,
+        partialQty: 0,
+        neglectedQty: 0,
         wishlistCount: 0,
         acceptedCount: 0,
       });
     }
     const cSalesItem = cItem.salespersonMap.get(sId);
-    cSalesItem.totalWishlistQty += qty;
+    cSalesItem.totalWishlistQty += totalQty;
     cSalesItem.acceptedQty += accQty;
+    cSalesItem.partialQty += partQty;
+    cSalesItem.neglectedQty += negQty;
     cSalesItem.wishlistCount += 1;
-    if (isAccepted) cSalesItem.acceptedCount += 1;
+    if (accQty > 0 || partQty > 0) cSalesItem.acceptedCount += 1;
   }
 
   // Format salesperson summary
   let salespersonSummary = Array.from(salespersonMap.values()).map((s) => {
-    const rate = s.totalWishlistQty > 0 ? Number(((s.acceptedQty / s.totalWishlistQty) * 100).toFixed(2)) : 0;
+    const fulfilledQty = s.acceptedQty + s.partialQty;
+    const rate = s.totalWishlistQty > 0 ? Number(((fulfilledQty / s.totalWishlistQty) * 100).toFixed(2)) : 0;
     const customers = Array.from(s.customerMap.values()).map((c) => {
-      const cRate = c.totalWishlistQty > 0 ? Number(((c.acceptedQty / c.totalWishlistQty) * 100).toFixed(2)) : 0;
+      const cFulfilled = c.acceptedQty + c.partialQty;
+      const cRate = c.totalWishlistQty > 0 ? Number(((cFulfilled / c.totalWishlistQty) * 100).toFixed(2)) : 0;
       return {
         ...c,
         acceptanceRate: cRate,
@@ -971,6 +1061,8 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
       salespersonEmail: s.salespersonEmail,
       totalWishlistQty: s.totalWishlistQty,
       acceptedQty: s.acceptedQty,
+      partialQty: s.partialQty,
+      neglectedQty: s.neglectedQty,
       acceptanceRate: rate,
       wishlistCount: s.wishlistCount,
       acceptedCount: s.acceptedCount,
@@ -981,9 +1073,11 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
 
   // Format customer summary
   let customerSummary = Array.from(customerMap.values()).map((c) => {
-    const rate = c.totalWishlistQty > 0 ? Number(((c.acceptedQty / c.totalWishlistQty) * 100).toFixed(2)) : 0;
+    const fulfilledQty = c.acceptedQty + c.partialQty;
+    const rate = c.totalWishlistQty > 0 ? Number(((fulfilledQty / c.totalWishlistQty) * 100).toFixed(2)) : 0;
     const salespersons = Array.from(c.salespersonMap.values()).map((s) => {
-      const sRate = s.totalWishlistQty > 0 ? Number(((s.acceptedQty / s.totalWishlistQty) * 100).toFixed(2)) : 0;
+      const sFulfilled = s.acceptedQty + s.partialQty;
+      const sRate = s.totalWishlistQty > 0 ? Number(((sFulfilled / s.totalWishlistQty) * 100).toFixed(2)) : 0;
       return {
         ...s,
         acceptanceRate: sRate,
@@ -996,6 +1090,8 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
       customerPhone: c.customerPhone,
       totalWishlistQty: c.totalWishlistQty,
       acceptedQty: c.acceptedQty,
+      partialQty: c.partialQty,
+      neglectedQty: c.neglectedQty,
       acceptanceRate: rate,
       wishlistCount: c.wishlistCount,
       acceptedCount: c.acceptedCount,
@@ -1006,7 +1102,8 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
 
   // Format detail breakdown
   let detailedBreakdown = Array.from(detailMap.values()).map((d) => {
-    const rate = d.totalWishlistQty > 0 ? Number(((d.acceptedQty / d.totalWishlistQty) * 100).toFixed(2)) : 0;
+    const fulfilledQty = d.acceptedQty + d.partialQty;
+    const rate = d.totalWishlistQty > 0 ? Number(((fulfilledQty / d.totalWishlistQty) * 100).toFixed(2)) : 0;
     return {
       ...d,
       acceptanceRate: rate,
@@ -1033,15 +1130,18 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
     );
   }
 
+  const overallFulfilledQty = overallAcceptedQty + overallPartialQty;
   const overallAcceptanceRate =
     overallTotalWishlistQty > 0
-      ? Number(((overallAcceptedQty / overallTotalWishlistQty) * 100).toFixed(2))
+      ? Number(((overallFulfilledQty / overallTotalWishlistQty) * 100).toFixed(2))
       : 0;
 
   return {
     overall: {
       totalWishlistQty: overallTotalWishlistQty,
       acceptedQty: overallAcceptedQty,
+      partialQty: overallPartialQty,
+      neglectedQty: overallNeglectedQty,
       acceptanceRate: overallAcceptanceRate,
       totalSalespersons: salespersonMap.size,
       totalCustomers: customerMap.size,
@@ -1063,12 +1163,18 @@ exports.getWishlistRating = async ({ startDate, endDate, search, salespersonId, 
  * @param {string} [options.financialYear] - e.g. "2026-27"
  * @param {number} [options.month]         - 1-12 (calendar month)
  */
-exports.getWishlistAnalytics = async ({ financialYear, month } = {}) => {
-  // --- Determine date range from financial year ---
+exports.getWishlistAnalytics = async ({ financialYear, month, startDate, endDate } = {}) => {
+  // --- Determine date range ---
   let dateFrom = null;
   let dateTo = null;
 
-  if (financialYear) {
+  if (startDate || endDate) {
+    if (startDate) dateFrom = new Date(startDate);
+    if (endDate) {
+      dateTo = new Date(endDate);
+      dateTo.setHours(23, 59, 59, 999);
+    }
+  } else if (financialYear) {
     // Parse "2026-27" → start April 2026, end March 2027
     const parts = financialYear.split("-");
     const startYear = parseInt(parts[0], 10);
@@ -1093,13 +1199,20 @@ exports.getWishlistAnalytics = async ({ financialYear, month } = {}) => {
     activeQuery.createdAt = { $gte: dateFrom, $lte: dateTo };
     historyQuery.$or = [
       { originalCreatedAt: { $gte: dateFrom, $lte: dateTo } },
+      { createdAt: { $gte: dateFrom, $lte: dateTo } },
       { actionAt: { $gte: dateFrom, $lte: dateTo } },
     ];
   }
 
   const [activeDocs, historyDocs, totalOrdersResult] = await Promise.all([
-    Wishlist.find(activeQuery).lean(),
-    WishlistHistory.find(historyQuery).lean(),
+    Wishlist.find(activeQuery)
+      .populate("customer", "name phone email location")
+      .populate("createdBy", "name email")
+      .lean(),
+    WishlistHistory.find(historyQuery)
+      .populate("customer", "name phone email location")
+      .populate("createdBy", "name email")
+      .lean(),
     // Total sell orders in the period (for wishlist-order percentage)
     SellOrder.countDocuments(
       dateFrom && dateTo
@@ -1136,7 +1249,48 @@ exports.getWishlistAnalytics = async ({ financialYear, month } = {}) => {
   let totalRequestedQtyInPartial = 0;
   let totalAcceptedQtyInPartial = 0;
   let totalRemainingQtyInPartial = 0;
+  const ALL_PARTIAL_REASONS = [
+    "By Sales Person mistake",
+    "Less stock assigned by Production Manager",
+    "Customer Requested Less Quantity",
+    "Raw Material / Stock Shortage",
+    "Holiday",
+    "Weekend",
+    "Platform Server Down",
+    "Logistics & Transport Constraint",
+    "Quality Inspection Rejection",
+    "Other",
+  ];
+
   const reasonMap = {};
+  ALL_PARTIAL_REASONS.forEach((r) => {
+    reasonMap[r] = {
+      reason: r,
+      count: 0,
+      requestedQty: 0,
+      acceptedQty: 0,
+      remainingQty: 0,
+    };
+  });
+
+  const ALL_REJECTION_REASONS = [
+    "By Sales Person mistake",
+    "Customer Cancelled Order",
+    "Customer Requested Different Product / Price",
+    "Customer Not Responding",
+    "Customer Store Closed / Relocated",
+    "Duplicate Wishlist Created",
+    "Other",
+  ];
+
+  const rejectionReasonMap = {};
+  ALL_REJECTION_REASONS.forEach((r) => {
+    rejectionReasonMap[r] = {
+      reason: r,
+      count: 0,
+    };
+  });
+
   let waitingTimeSumDays = 0;
   let waitingTimeCount = 0;
   let orderFromWishlistCount = 0;
@@ -1148,7 +1302,7 @@ exports.getWishlistAnalytics = async ({ financialYear, month } = {}) => {
     const qty = (doc.WishList || []).reduce((s, it) => s + (Number(it.quantity) || 0), 0);
     totalWishlistQty += qty;
 
-    const action = doc.wishAction;
+    const action = normalizeWishAction(doc.wishAction, doc.isPartialOrder);
 
     // Monthly tracking
     const docDate = new Date(doc.originalCreatedAt || doc.createdAt);
@@ -1166,33 +1320,68 @@ exports.getWishlistAnalytics = async ({ financialYear, month } = {}) => {
         partialOrders: 0,
         totalQty: 0,
         acceptedQty: 0,
+        wishlists: [],
       };
     }
     const mm = monthlyMap[monthKey];
     mm.totalWishlists += 1;
     mm.totalQty += qty;
 
-    if (action === "Accepted") {
-      acceptedCount += 1;
+    const reqQty = doc.requestedQuantity || qty;
+    const accQty = doc.acceptedQuantity || (action === "Accepted" ? reqQty : (action === "Partial" ? qty : 0));
+    const remQty = doc.remainingQuantity || Math.max(0, reqQty - accQty);
+
+    mm.wishlists.push({
+      _id: doc._id,
+      customerName: doc.customer?.name || "N/A",
+      customerEmail: doc.customer?.email || "N/A",
+      salespersonName: doc.createdBy?.name || "N/A",
+      location: doc.Location?.[0]?.city || doc.customer?.location?.[0]?.city || "N/A",
+      wishAction: action,
+      requestedQuantity: reqQty,
+      acceptedQuantity: accQty,
+      remainingQuantity: remQty,
+      reason: doc.partialReasonCategory || doc.partialOrderReason || doc.rejectionReasonCategory || doc.rejectionReason || null,
+      createdAt: doc.originalCreatedAt || doc.createdAt,
+      actionAt: doc.actionAt || doc.updatedAt,
+      itemsCount: doc.WishList?.length || 0,
+    });
+
+    if (action === "Accepted" || action === "Partial") {
       orderFromWishlistCount += 1;
-      mm.accepted += 1;
 
       const reqQty = doc.requestedQuantity || qty;
-      const accQty = doc.acceptedQuantity || qty;
-      const remQty = doc.remainingQuantity || 0;
+      const accQty = doc.acceptedQuantity || (action === "Accepted" ? reqQty : qty);
+      const remQty = doc.remainingQuantity || Math.max(0, reqQty - accQty);
 
       totalAcceptedQty += accQty;
       totalRemainingQty += remQty;
       mm.acceptedQty += accQty;
 
-      if (doc.isPartialOrder) {
+      if (action === "Partial") {
         partialOrderCount += 1;
         mm.partialOrders += 1;
         totalRequestedQtyInPartial += reqQty;
         totalAcceptedQtyInPartial += accQty;
         totalRemainingQtyInPartial += remQty;
 
-        const reason = doc.partialOrderReason || "Unspecified";
+        let reason = doc.partialReasonCategory;
+        if (!reason && doc.partialOrderReason) {
+          const matched = ALL_PARTIAL_REASONS.find((r) =>
+            doc.partialOrderReason.toLowerCase().includes(r.toLowerCase())
+          );
+          if (matched) {
+            reason = matched;
+          } else {
+            const splitted = doc.partialOrderReason.split(" - ")[0].trim();
+            const matchedSplit = ALL_PARTIAL_REASONS.find((r) =>
+              r.toLowerCase() === splitted.toLowerCase()
+            );
+            reason = matchedSplit || "Other";
+          }
+        }
+        if (!reason) reason = "Other";
+
         if (!reasonMap[reason]) {
           reasonMap[reason] = {
             reason,
@@ -1207,24 +1396,36 @@ exports.getWishlistAnalytics = async ({ financialYear, month } = {}) => {
         reasonMap[reason].acceptedQty += accQty;
         reasonMap[reason].remainingQty += remQty;
       } else {
+        acceptedCount += 1;
         fullOrderCount += 1;
+        mm.accepted += 1;
         mm.fullOrders += 1;
-      }
-
-      // Waiting time (only for fulfilled/accepted wishlists)
-      if (doc.waitingTimeDays != null) {
-        waitingTimeSumDays += doc.waitingTimeDays;
-        waitingTimeCount += 1;
-      } else if (doc.fulfillmentDate && (doc.originalCreatedAt || doc.createdAt)) {
-        const created = new Date(doc.originalCreatedAt || doc.createdAt);
-        const fulfilled = new Date(doc.fulfillmentDate);
-        const days = (fulfilled - created) / (1000 * 60 * 60 * 24);
-        waitingTimeSumDays += days;
-        waitingTimeCount += 1;
       }
     } else if (action === "Rejected") {
       rejectedCount += 1;
       mm.rejected += 1;
+
+      let rejReason = doc.rejectionReasonCategory;
+      if (!rejReason && doc.rejectionReason) {
+        const matched = ALL_REJECTION_REASONS.find((r) =>
+          doc.rejectionReason.toLowerCase().includes(r.toLowerCase())
+        );
+        if (matched) {
+          rejReason = matched;
+        } else {
+          const splitted = doc.rejectionReason.split(" - ")[0].trim();
+          const matchedSplit = ALL_REJECTION_REASONS.find((r) =>
+            r.toLowerCase() === splitted.toLowerCase()
+          );
+          rejReason = matchedSplit || "Other";
+        }
+      }
+      if (!rejReason) rejReason = "Other";
+
+      if (!rejectionReasonMap[rejReason]) {
+        rejectionReasonMap[rejReason] = { reason: rejReason, count: 0 };
+      }
+      rejectionReasonMap[rejReason].count += 1;
     } else if (action === "Not Fulfilled") {
       notFulfilledCount += 1;
       mm.notFulfilled += 1;
@@ -1235,12 +1436,31 @@ exports.getWishlistAnalytics = async ({ financialYear, month } = {}) => {
       timeoutCount += 1;
       mm.timeout += 1;
     }
+
+    // Waiting time calculation for all history / completed documents
+    if (doc.isHistory || doc.actionAt) {
+      if (doc.waitingTimeDays != null) {
+        waitingTimeSumDays += doc.waitingTimeDays;
+        waitingTimeCount += 1;
+      } else {
+        const created = new Date(doc.originalCreatedAt || doc.createdAt);
+        const actionDate = new Date(doc.actionAt || doc.fulfillmentDate || Date.now());
+        const days = Math.max(0, (actionDate - created) / (1000 * 60 * 60 * 24));
+        waitingTimeSumDays += days;
+        waitingTimeCount += 1;
+      }
+    }
   }
 
   const totalOrders = totalOrdersResult || 0;
   const wishlistOrderPercentage =
     totalOrders > 0
       ? Number(((orderFromWishlistCount / totalOrders) * 100).toFixed(2))
+      : 0;
+
+  const quantityConversionRate =
+    totalWishlistQty > 0
+      ? Number(((totalAcceptedQty / totalWishlistQty) * 100).toFixed(2))
       : 0;
 
   const partialOrderPercentage =
@@ -1270,6 +1490,7 @@ exports.getWishlistAnalytics = async ({ financialYear, month } = {}) => {
       totalOrders,
       ordersFromWishlist: orderFromWishlistCount,
       wishlistOrderPercentage,
+      quantityConversionRate,
       acceptedOrders: acceptedCount,
       rejectedOrders: rejectedCount,
       notFulfilledOrders: notFulfilledCount,
@@ -1277,6 +1498,7 @@ exports.getWishlistAnalytics = async ({ financialYear, month } = {}) => {
       timeoutOrders: timeoutCount,
       fullOrders: fullOrderCount,
       partialOrders: partialOrderCount,
+      partialAcceptedQty: totalAcceptedQtyInPartial,
       partialOrderPercentage,
       averageWaitingTimeDays,
       totalAcceptedQty,
@@ -1290,6 +1512,146 @@ exports.getWishlistAnalytics = async ({ financialYear, month } = {}) => {
       totalRemainingQty: totalRemainingQtyInPartial,
       byReason: Object.values(reasonMap),
     },
+    rejectionOrderBreakdown: {
+      totalRejectedOrders: rejectedCount,
+      byReason: Object.values(rejectionReasonMap),
+    },
     monthlyBreakdown,
+  };
+};
+
+/**
+ * Combined active Wishlist + WishlistHistory records filtered by year, month, date range, search, status with pagination.
+ */
+exports.getWishlistMonthlyRecords = async ({
+  financialYear,
+  month,
+  startDate,
+  endDate,
+  search,
+  status,
+  page = 1,
+  limit = 10,
+} = {}) => {
+  let dateFrom = null;
+  let dateTo = null;
+
+  if (startDate || endDate) {
+    if (startDate) dateFrom = new Date(startDate);
+    if (endDate) {
+      dateTo = new Date(endDate);
+      dateTo.setHours(23, 59, 59, 999);
+    }
+  } else if (financialYear) {
+    const parts = financialYear.split("-");
+    const startYear = parseInt(parts[0], 10);
+    dateFrom = new Date(startYear, 3, 1);
+    dateTo = new Date(startYear + 1, 2, 31, 23, 59, 59, 999);
+
+    if (month) {
+      const m = parseInt(month, 10);
+      const calYear = m >= 4 ? startYear : startYear + 1;
+      dateFrom = new Date(calYear, m - 1, 1);
+      dateTo = new Date(calYear, m, 0, 23, 59, 59, 999);
+    }
+  }
+
+  const activeQuery = { isActive: true };
+  const historyQuery = {};
+
+  if (dateFrom && dateTo) {
+    activeQuery.createdAt = { $gte: dateFrom, $lte: dateTo };
+    historyQuery.$or = [
+      { originalCreatedAt: { $gte: dateFrom, $lte: dateTo } },
+      { createdAt: { $gte: dateFrom, $lte: dateTo } },
+      { actionAt: { $gte: dateFrom, $lte: dateTo } },
+    ];
+  }
+
+  const [activeDocs, historyDocs] = await Promise.all([
+    Wishlist.find(activeQuery)
+      .populate("customer", "name phone email location")
+      .populate("createdBy", "name email")
+      .lean(),
+    WishlistHistory.find(historyQuery)
+      .populate("customer", "name phone email location")
+      .populate("createdBy", "name email")
+      .lean(),
+  ]);
+
+  let combined = [
+    ...activeDocs.map((d) => ({
+      ...d,
+      _source: "active",
+      wishAction: computeActiveWishlistStatus(d),
+    })),
+    ...historyDocs.map((d) => ({
+      ...d,
+      _source: "history",
+    })),
+  ];
+
+  // Enrich WishList items with article, categoryCode, size, color, type, quality from Product.category sub-documents
+  const { enrichOrdersWithProductDetails } = require("./salesOrder.service");
+  await enrichOrdersWithProductDetails(combined);
+
+  // Normalize wishAction for all documents
+  combined = combined.map((doc) => {
+    const action = normalizeWishAction(doc.wishAction, doc.isPartialOrder);
+    const qty = (doc.WishList || []).reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+    const reqQty = doc.requestedQuantity || qty;
+    const accQty = doc.acceptedQuantity || (action === "Accepted" ? reqQty : (action === "Partial" ? qty : 0));
+    const remQty = doc.remainingQuantity || Math.max(0, reqQty - accQty);
+    const reason = doc.partialReasonCategory || doc.partialOrderReason || doc.rejectionReasonCategory || doc.rejectionReason || null;
+
+    return {
+      ...doc,
+      wishAction: action,
+      totalQty: qty,
+      requestedQuantity: reqQty,
+      acceptedQuantity: accQty,
+      remainingQuantity: remQty,
+      reason,
+      displayDate: doc.originalCreatedAt || doc.createdAt,
+    };
+  });
+
+  // Filter by status if requested
+  if (status) {
+    combined = combined.filter((doc) => doc.wishAction === status);
+  }
+
+  // Filter by search query if requested
+  if (search && search.trim()) {
+    const q = search.trim().toLowerCase();
+    combined = combined.filter((doc) => {
+      const custName = (doc.customer?.name || "").toLowerCase();
+      const spName = (doc.createdBy?.name || "").toLowerCase();
+      const city = (doc.Location?.[0]?.city || doc.customer?.location?.[0]?.city || "").toLowerCase();
+      const desc = (doc.description || "").toLowerCase();
+      const articles = (doc.WishList || []).map((it) => (it.productId?.articleName || it.productId?.name || "").toLowerCase()).join(" ");
+
+      return custName.includes(q) || spName.includes(q) || city.includes(q) || desc.includes(q) || articles.includes(q);
+    });
+  }
+
+  // Sort descending by date
+  combined.sort((a, b) => new Date(b.displayDate) - new Date(a.displayDate));
+
+  // Pagination
+  const pageNum = parseInt(page, 10) || 1;
+  const limitNum = parseInt(limit, 10) || 10;
+  const totalItems = combined.length;
+  const totalPages = Math.ceil(totalItems / limitNum) || 1;
+  const paginated = combined.slice((pageNum - 1) * limitNum, pageNum * limitNum);
+
+  return {
+    records: paginated,
+    pagination: {
+      currentPage: pageNum,
+      totalPages,
+      totalItems,
+      itemsPerPage: limitNum,
+    },
   };
 };

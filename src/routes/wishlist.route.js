@@ -10,6 +10,8 @@ router.get('/all', WishlistController.getAllWishlist);
 router.get('/rating', requireAuth, requireAdminRoles('Admin', 'Administrator'), WishlistController.getWishlistRating);
 // Get wishlist analytics (yearly/financial-year reporting)
 router.get('/analytics', requireAuth, requireAdminRoles('Admin', 'Administrator'), WishlistController.getWishlistAnalytics);
+// Get combined wishlist + history monthly records with pagination
+router.get('/monthly-records', requireAuth, requireAdminRoles('Admin', 'Administrator'), WishlistController.getWishlistMonthlyRecords);
 //get wishlist for sales person
 router.get("/get/bysalesperson", requireAuth, requireAdminRoles('Sales Person', 'Admin', 'Administrator'), WishlistController.getWishlistBySalesperson);
 router.get('/:id', WishlistController.getWishlistById);

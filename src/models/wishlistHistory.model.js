@@ -42,7 +42,7 @@ const wishlistHistorySchema = new mongoose.Schema(
     // How the wishlist ended up here.
     wishAction: {
       type: String,
-      enum: ["Accepted", "Rejected", "Timeout", "Not Fulfilled", "Expired"],
+      enum: ["Accepted", "Partial", "Rejected", "Timeout", "Not Fulfilled", "Expired"],
       required: true,
     },
     // When the action happened.
@@ -61,7 +61,52 @@ const wishlistHistorySchema = new mongoose.Schema(
     // Whether the order placed was partial (acceptedQty < requestedQty).
     isPartialOrder: { type: Boolean, default: false },
     // Mandatory reason when partial. Null / absent for full orders.
+    partialReasonCategory: {
+      type: String,
+      enum: [
+        "By Sales Person mistake",
+        "Less stock assigned by Production Manager",
+        "Holiday",
+        "Weekend",
+        "Platform Server Down",
+        "Customer Requested Less Quantity",
+        "Raw Material / Stock Shortage",
+        "Logistics & Transport Constraint",
+        "Quality Inspection Rejection",
+        "Other",
+        null
+      ],
+      default: null,
+    },
+    partialOrderExplanation: {
+      type: String,
+      default: null,
+    },
     partialOrderReason: {
+      type: String,
+      default: null,
+    },
+
+    // --- Rejection Metadata ---
+    rejectionReasonCategory: {
+      type: String,
+      enum: [
+        "By Sales Person mistake",
+        "Customer Cancelled Order",
+        "Customer Requested Different Product / Price",
+        "Customer Not Responding",
+        "Customer Store Closed / Relocated",
+        "Duplicate Wishlist Created",
+        "Other",
+        null
+      ],
+      default: null,
+    },
+    rejectionOrderExplanation: {
+      type: String,
+      default: null,
+    },
+    rejectionReason: {
       type: String,
       default: null,
     },

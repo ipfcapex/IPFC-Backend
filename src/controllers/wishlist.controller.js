@@ -274,12 +274,14 @@ exports.updateWishlistById = async (req, res) => {
 exports.completeWishlist = async (req, res) => {
   try {
     const { id } = req.params;
-    const { schemesId, acceptedQuantities, partialOrderReason } = req.body || {};
+    const { schemesId, acceptedQuantities, partialOrderReason, partialReasonCategory, partialOrderExplanation } = req.body || {};
 
     const { order, history } = await WishlistService.findandmarkdone(id, {
       schemesId,
       acceptedQuantities,
       partialOrderReason,
+      partialReasonCategory,
+      partialOrderExplanation,
     });
 
     return res.status(200).json({
@@ -309,7 +311,16 @@ exports.completeWishlist = async (req, res) => {
 exports.softDeleteWishlistById = async (req, res) => {
   try {
     const { id } = req.params;
-    const rejectedWishlist = await WishlistService.softDeleteWishlistById(id);
+    const { rejectionReasonCategory, rejectionOrderExplanation, rejectionReason, partialReasonCategory, partialOrderExplanation, partialOrderReason } = req.body || {};
+
+    const rejectedWishlist = await WishlistService.softDeleteWishlistById(id, {
+      rejectionReasonCategory,
+      rejectionOrderExplanation,
+      rejectionReason,
+      partialReasonCategory,
+      partialOrderExplanation,
+      partialOrderReason,
+    });
 
     return res.status(200).json({
       success: true,
@@ -354,11 +365,13 @@ exports.getWishlistRating = async (req, res) => {
 
 exports.getWishlistAnalytics = async (req, res) => {
   try {
-    const { financialYear, month } = req.query;
+    const { financialYear, month, startDate, endDate } = req.query;
 
     const data = await WishlistService.getWishlistAnalytics({
       financialYear,
       month,
+      startDate,
+      endDate,
     });
 
     return res.status(200).json({
@@ -371,6 +384,36 @@ exports.getWishlistAnalytics = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: error.message || "Failed to fetch wishlist analytics",
+    });
+  }
+};
+
+exports.getWishlistMonthlyRecords = async (req, res) => {
+  try {
+    const { financialYear, month, startDate, endDate, search, status, page, limit } = req.query;
+
+    const result = await WishlistService.getWishlistMonthlyRecords({
+      financialYear,
+      month,
+      startDate,
+      endDate,
+      search,
+      status,
+      page,
+      limit,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Monthly wishlist records fetched successfully",
+      data: result.records,
+      pagination: result.pagination,
+    });
+  } catch (error) {
+    console.error("Wishlist Monthly Records Error:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to fetch monthly wishlist records",
     });
   }
 };
