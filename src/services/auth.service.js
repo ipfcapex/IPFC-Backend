@@ -7,7 +7,6 @@ const httpStatus = require("http-status");
 const ApiError = require("../utils/ApiError");
 const { sendNotification } = require("./notificationService");
 const path = require("path");
-const cloudinary = require("../utils/cloudinary")
 const { uploadToS3 } = require("../middleware/aws.Middleware"); // your S3 helper
 require('dotenv').config();
 const { sns, sendEmailOTP, resendEmailOTP, sendEmailOTPforpasswordchange } = require("../utils/awsOTPservice");
@@ -17,6 +16,9 @@ const { PublishCommand  } = require("@aws-sdk/client-sns");
 const AWS = require("aws-sdk");
 require("dotenv").config();
 const { getLocationFromCoordinates } = require("../utils/Location");
+
+// Refresh-token idle window. Must match the frontend idle-logout timer (1 hour).
+const REFRESH_TTL_MS = 60 * 60 * 1000;
 
 
 // register for Admin and Administrator
@@ -161,15 +163,15 @@ const loginWithOtp = async (req, email, otp, latitude, longitude) => {
     location,
   };
 
-  const accessToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || "2h" });
-  const refreshToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "2h" });
+  const accessToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || "1h" });
+  const refreshToken = jwt.sign({ id: user._id }, process.env.JWT_REFRESH_SECRET, { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "1d" });
 
-  // 6️⃣ Save refresh token with location info
+  // 6️⃣ Save refresh token with location info (1h idle window, kept in sync with refreshAuth)
   const newToken = new Token({
     token: refreshToken,
     user: user._id,
     type: tokenTypes.REFRESH,
-    expires: new Date(Date.now() + 2 * 60 * 60 * 1000),
+    expires: new Date(Date.now() + REFRESH_TTL_MS),
     latitude,
     longitude,
     ...location,
@@ -317,40 +319,29 @@ const reSendOpt = async (email) => {
 
 // Logout For all Role type
 
-const Logout = async (req, refreshToken) => {
+const Logout = async (refreshToken) => {
+  if (!refreshToken) return; // nothing to revoke
+
   const refreshTokenDoc = await Token.findOne({
     token: refreshToken,
     type: tokenTypes.REFRESH,
     blacklisted: false,
   });
 
-  if (!refreshTokenDoc) {
-    throw new ApiError(
-      httpStatus.NOT_FOUND,
-      "Refresh token not found or already expired"
-    );
-  }
+  // Idempotent: if the token is already gone, treat logout as successful
+  if (!refreshTokenDoc) return;
 
   const user = await User.findById(refreshTokenDoc.user);
   if (user) {
     console.log(`⛔ Session manually logged out for user: ${user.email}`);
-  }
-
-   if (user) {
     sendNotification("logoutSuccess", {
-      id:user.id,
-      message: ` ${user.email} Logged Out`,
+      id: user.id,
+      message: `${user.email} Logged Out`,
       data: user,
     });
   }
-  await refreshTokenDoc.deleteOne();
 
-  // 🔥 Destroy session here
-  if (req.session) {
-    req.session.destroy(() => {
-      console.log(`🟠 Express session destroyed for manual logout`);
-    });
-  }
+  await refreshTokenDoc.deleteOne();
 };
 
 const changePassword = async (email, oldPassword, newPassword) => {
@@ -732,8 +723,13 @@ const changePasswordS = async (email, newPassword, confirmPassword) => {
   // const record = otpStore[phone];
   // if (!record || !record.verified) return { success: false, message: "OTP not verified" };
 
-  if (newPassword !== confirmPassword) 
+  if (newPassword !== confirmPassword)
     return { success: false, message: "Passwords do not match" };
+
+  // Guard against NoSQL operator injection: email must be a plain string.
+  if (typeof email !== "string") {
+    return { success: false, message: "Invalid email" };
+  }
 
   const user = await User.findOne({ email });
   if (!user) return { success: false, message: "Email is not registered" };
@@ -748,12 +744,73 @@ const changePasswordS = async (email, newPassword, confirmPassword) => {
   return { success: true, data:"Password Changed for user" }; // success
 };
 
+// Exchange a valid refresh token for a new access token (with rotation).
+const refreshAuth = async (refreshToken) => {
+  if (!refreshToken) throw new ApiError(httpStatus.BAD_REQUEST, "Refresh token required");
+
+  let decoded;
+  try {
+    decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+  } catch (err) {
+    throw new ApiError(httpStatus.UNAUTHORIZED, "Invalid or expired refresh token");
+  }
+
+  const tokenDoc = await Token.findOne({
+    token: refreshToken,
+    type: tokenTypes.REFRESH,
+    blacklisted: false,
+  });
+  if (!tokenDoc) throw new ApiError(httpStatus.UNAUTHORIZED, "Refresh token not recognized");
+
+  const user = await User.findById(decoded.id).populate("warehouses", "name location");
+  if (!user) throw new ApiError(httpStatus.UNAUTHORIZED, "User not found");
+
+  console.log(`🔄 Refreshing access token for user: ${user.email}`);
+
+  // Rotate: the used refresh token is single-use
+  await tokenDoc.deleteOne();
+
+  const location = {
+    latitude: tokenDoc.latitude,
+    longitude: tokenDoc.longitude,
+    city: tokenDoc.city,
+    area: tokenDoc.area,
+    fullAddress: tokenDoc.fullAddress,
+  };
+
+  const payload = {
+    id: user._id,
+    phone: user.phone,
+    email: user.email,
+    role: user.role,
+    location,
+  };
+
+  const accessToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || "1h" });
+  const newRefreshToken = jwt.sign({ id: user._id }, process.env.JWT_REFRESH_SECRET, { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "1d" });
+
+  await Token.create({
+    token: newRefreshToken,
+    user: user._id,
+    type: tokenTypes.REFRESH,
+    expires: new Date(Date.now() + REFRESH_TTL_MS),
+    latitude: tokenDoc.latitude,
+    longitude: tokenDoc.longitude,
+    city: tokenDoc.city,
+    area: tokenDoc.area,
+    fullAddress: tokenDoc.fullAddress,
+  });
+
+  return { accessToken, refreshToken: newRefreshToken };
+};
+
 module.exports = {
   register,
   LoginUser,
   reSendOpt,
   loginWithOtp,
   Logout,
+  refreshAuth,
   changePassword,
   createUser,
   getUsersByRole,

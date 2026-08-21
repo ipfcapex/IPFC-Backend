@@ -12,8 +12,9 @@ exports.getAggregatedStocks = async (req, res) => {
     // Optional: when the order is created from a wishlist, exclude that
     // wishlist's own reserved qty from the availability calculation.
     const excludeWishlistId = req.query.excludeWishlistId?.trim() || null;
+    const groupByArticle = req.query.groupByArticle === 'true';
 
-    const aggregatedStock = await orderService.getAggregatedStock(page, limit, search, excludeWishlistId);
+    const aggregatedStock = await orderService.getAggregatedStock(page, limit, search, excludeWishlistId, groupByArticle);
 
     return res.status(200).json({
       success: true,
@@ -489,7 +490,7 @@ exports.getAllbySalesperson = async (req, res) => {
       );
     };
     let cartOrders = await SellOrder.find(query)
-      .select("salesOrderNo customer article items createdBy createdAt numOfDispatchedQty scheme Location")
+      .select("salesOrderNo customer article items createdBy createdAt numOfDispatchedQty scheme Location accountSectionApproval note inventoryManagerApproval deliveryStatus ScannedByWarehouseManager")
       .populate("customer", "name phone email location")
       .populate("createdBy", "name email")
       .populate("scheme", "schemesName schemesType schemesQuantity schemesDescription")
@@ -690,3 +691,45 @@ exports.getArticleDetailsByName = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// GET /sale-order/review-list — Review List Carton Quantity Verification (Factory -> Warehouse)
+exports.getReviewList = async (req, res) => {
+  try {
+    const pageNum = parseInt(req.query.page, 10);
+    const limitNum = parseInt(req.query.limit, 10);
+    const page = !isNaN(pageNum) && pageNum > 0 ? pageNum : 1;
+    const limit = !isNaN(limitNum) && limitNum > 0 ? limitNum : 10;
+
+    const cleanStr = (val, fallback = "") => {
+      if (!val || typeof val !== "string") return fallback;
+      const s = val.trim();
+      return s === "undefined" || s === "null" ? fallback : s;
+    };
+
+    const search = cleanStr(req.query.search, "");
+    const startDate = cleanStr(req.query.startDate, "");
+    const endDate = cleanStr(req.query.endDate, "");
+    const status = cleanStr(req.query.status, "ALL");
+    const type = cleanStr(req.query.type, "");
+
+    const result = await orderService.getReviewListOrders({
+      page,
+      limit,
+      search,
+      startDate,
+      endDate,
+      status,
+      type,
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("Error in getReviewList controller:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch review list carton verification data",
+      error: error.message,
+    });
+  }
+};
+

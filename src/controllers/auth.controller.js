@@ -121,14 +121,18 @@ const resendopt = async (req, res, next) => {
 
 const logout = catchAsync(async (req, res) => {
   await authService.Logout(req.body.refreshToken);
-  console.log(`Session Destroy for ${req.session.user.useremail}`);
-  req.session.destroy((err) => {
-    if (err) return res.status(500).send('Could not log out.');
-    return res.status(200).json({
-      success: true,
-      message: 'Logout form account'
+  if (req.session) {
+    return req.session.destroy((err) => {
+      if (err) return res.status(500).json({ success: false, message: 'Could not log out.' });
+      return res.status(200).json({ success: true, message: 'Logged out successfully' });
     });
-  });
+  }
+  return res.status(200).json({ success: true, message: 'Logged out successfully' });
+});
+
+const refreshToken = catchAsync(async (req, res) => {
+  const result = await authService.refreshAuth(req.body.refreshToken);
+  res.status(200).json({ success: true, ...result });
 });
 
 const handleChangePassword = async (req, res) => {
@@ -266,6 +270,7 @@ module.exports = {
   // loginWithOtpsses,
   resendopt,
   logout,
+  refreshToken,
   handleChangePassword,
   createUser,
   getUsersbyRoles,

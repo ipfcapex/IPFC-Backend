@@ -20,7 +20,21 @@ const requireAuth = (req, res, next) => {
 const requireAdminRoles = (...roles) => {
   return (req, res, next) => {
     console.log("Checking user role:", req.user?.role);
-    if (!req.user || !roles.includes(req.user.role)) {
+    if (!req.user) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
+
+    const userRole = req.user.role;
+    const allowedRoles = new Set(roles);
+
+    // If any admin role is specified in allowed roles, expand access to all admin role aliases ('Admin', 'Administrator', 'Super Admin')
+    if (roles.some((r) => ["Admin", "Administrator", "Super Admin"].includes(r))) {
+      allowedRoles.add("Admin");
+      allowedRoles.add("Administrator");
+      allowedRoles.add("Super Admin");
+    }
+
+    if (!allowedRoles.has(userRole)) {
       return res.status(403).json({ message: "Access denied You have limited access" });
     }
     next();

@@ -1,13 +1,7 @@
 const jwt = require('jsonwebtoken');
 
 const authMiddleware = (req, res, next) => {
-  // First try session (if using express-session)
-  if (req.session && req.session.user) {
-    req.user = req.session.user;
-    return next();
-  }
-
-  // Then try Authorization header with Bearer token
+  // Try Authorization header with Bearer token
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
@@ -17,10 +11,15 @@ const authMiddleware = (req, res, next) => {
       req.user = decoded;
       return next();
     } catch (err) {
-      return res.status(403).json({ message: 'Invalid token' });
+      if (err.name === 'TokenExpiredError') {
+        console.log("⚠️ Access token expired for route:", req.originalUrl);
+        return res.status(401).json({ message: 'Token expired', expired: true });
+      }
+      console.log("❌ Invalid token for route:", req.originalUrl, err.message);
+      return res.status(401).json({ message: 'Invalid token' });
     }
   }
-  console.log("user",req.user)
+  console.log("user", req.user)
 
   return res.status(401).json({ message: 'Unauthorized' });
 };

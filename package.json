@@ -16,7 +16,6 @@
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
     "chartjs-node-canvas": "^5.0.0",
-    "cloudinary": "^2.7.0",
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
     "csv-parser": "^3.2.0",

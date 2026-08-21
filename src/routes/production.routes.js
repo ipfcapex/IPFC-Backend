@@ -14,7 +14,7 @@ const handleValidation = (req, res, next) => {
 
 router.post('/addProduct', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager', 'Inventory Manager'), validateProduct, handleValidation, productionController.createProduct);
 router.get('/', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager', 'Inventory Manager'), productionController.getProducts);
-router.get('/productionmanager', requireAuth, productionController.getProductionDatabyPM);
+router.get('/productionmanager', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter', 'Admin', 'Warehouse Manager', 'Inventory Manager', 'Super Admin'), productionController.getProductionDatabyPM);
 //get production data with out QR data
 router.get('/noqr', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager', 'Inventory Manager'), productionController.getProductionsWithoutQR);
 router.get('/:id', requireAuth, requireAdminRoles('Administrator', 'Packing Reporter','Admin', 'Warehouse Manager', 'Inventory Manager'), productionController.getProductByIdController);

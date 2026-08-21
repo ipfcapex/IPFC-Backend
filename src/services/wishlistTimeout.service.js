@@ -2,11 +2,11 @@ const cron = require("node-cron");
 const { Wishlist } = require("../models");
 const wishlistService = require("./wishlist.service");
 
-// Same 12h window the old TTL index used (43200s). If a wishlist is neither
-// Accepted nor Rejected within 12h of stock being applied (wishlistStockTime),
+// Same 15h window. If a wishlist is neither
+// Accepted nor Rejected within 15h of stock being applied (wishlistStockTime),
 // it is archived to WishlistHistory as a "Timeout" instead of being silently
 // deleted.
-const TIMEOUT_MS = 12 * 60 * 60 * 1000;
+const TIMEOUT_MS = 15 * 60 * 60 * 1000;
 
 // The wishlist collection used to carry a TTL index
 // { wishlistStockTime: 1 }, { expireAfterSeconds: 43200 } that DELETED documents
@@ -43,7 +43,7 @@ const runWishlistTimeoutJob = async () => {
     const cutoff = new Date(Date.now() - TIMEOUT_MS);
 
     // Only pending wishlists live in this collection, so any with stock applied
-    // more than 12h ago that are still here have timed out.
+    // more than 15h ago that are still here have timed out.
     const expired = await Wishlist.find({
       wishlistStockTime: { $ne: null, $lte: cutoff },
     });
@@ -64,12 +64,42 @@ const runWishlistTimeoutJob = async () => {
     if (archived > 0) {
       console.log(`Wishlist timeout job: ${archived} wishlist(s) archived as Timeout`);
     }
+
+    // --- 1-year expiry sweep ---
+    // Any active wishlist created more than 1 year ago is automatically
+    // archived to WishlistHistory with wishAction "Expired".
+    const oneYearAgo = new Date();
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+
+    const expiredWishlists = await Wishlist.find({
+      createdAt: { $lte: oneYearAgo },
+    });
+
+    let expiredCount = 0;
+    for (const wishlist of expiredWishlists) {
+      try {
+        await wishlistService.archiveWishlist(wishlist, "Expired");
+        expiredCount += 1;
+      } catch (err) {
+        console.error(
+          `Failed to archive expired wishlist ${wishlist._id}:`,
+          err.message
+        );
+      }
+    }
+
+    if (expiredCount > 0) {
+      console.log(`Wishlist 1-Year Expiry sweep: ${expiredCount} wishlist(s) archived as Expired`);
+    }
   } catch (error) {
     console.error("Wishlist timeout cron failed:", error.message);
   }
 };
 
-// Check every 10 minutes.
+// Check every 10 minutes automatically in background.
 cron.schedule("*/10 * * * *", runWishlistTimeoutJob);
+
+// Execute sweep on startup
+runWishlistTimeoutJob();
 
 module.exports = { runWishlistTimeoutJob };

@@ -5,6 +5,7 @@ const cors = require("cors");
 const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
 const connectDB = require("./config/db");
+const mongoSanitize = require("./middleware/sanitize.Middleware");
 const routes = require("./routes");
 const session = require("express-session");
 const http = require("http");
@@ -99,6 +100,10 @@ app.use(
 // Middleware: JSON body parser
 app.use(express.json());
 
+// Middleware: Strip MongoDB operator keys ($gt, $ne, dotted paths) from all
+// request input to prevent NoSQL injection into query filters.
+app.use(mongoSanitize);
+
 // Middleware: Logging (development only)
 if (process.env.NODE_ENV === "development") {
   app.use(morgan("dev"));
@@ -115,7 +120,7 @@ if (process.env.NODE_ENV === "development") {
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "ok",
-    service: "APEX Shoes Running Version-1.0.0",
+    service: "APEX Shoes Running Version-001",
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
   });

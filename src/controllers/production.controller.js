@@ -71,24 +71,18 @@ exports.getProductionDatabyPM = async (req, res) => {
     const user = await User.findById(PMid).lean();
     console.log("👤 User:", user);
 
-    if (!user || user.role !== "Packing Reporter") {
+    const canSeeAllFactories = ["Admin", "Administrator", "Super Admin", "Inventory Manager", "Warehouse Manager"].includes(user?.role);
+
+    if (!user || (!canSeeAllFactories && user.role !== "Packing Reporter")) {
       return res.status(403).json({
         success: false,
         message: "Access denied",
       });
     }
 
-    // 🏭 FACTORIES ASSIGNED TO PM (IMPORTANT)
+    // 🏭 FACTORIES ASSIGNED TO PM
     const assignedFactories = (user.production || []).map(id => id.toString());
     console.log("🏭 Assigned factories:", assignedFactories);
-
-    if (!assignedFactories.length) {
-      return res.status(200).json({
-        success: true,
-        data: [],
-        message: "No factories assigned to this Packing Reporter",
-      });
-    }
 
     // 📄 Pagination
     const page = parseInt(req.query.page, 10) || 1;
@@ -97,9 +91,18 @@ exports.getProductionDatabyPM = async (req, res) => {
 
     // ✅ CORRECT QUERY
     const query = {
-      factory: { $in: assignedFactories },
       isActive: true
     };
+    if (!canSeeAllFactories) {
+      if (!assignedFactories.length) {
+        return res.status(200).json({
+          success: true,
+          data: [],
+          message: "No factories assigned to this Packing Reporter",
+        });
+      }
+      query.factory = { $in: assignedFactories };
+    }
 
     // 🔍 Search
     if (req.query.search && req.query.search.trim()) {

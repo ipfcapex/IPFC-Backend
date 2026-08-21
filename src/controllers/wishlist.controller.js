@@ -1,4 +1,5 @@
 const { WishlistService } = require('../services'); // your service function
+const { computeActiveWishlistStatus } = require('../services/wishlist.service');
 const { Customer, Product, Wishlist, Schemes, WishlistHistory } = require("../models");
 const mongoose = require("mongoose");
 const { enrichOrdersWithProductDetails } = require("../services/salesOrder.service");
@@ -40,7 +41,7 @@ exports.addWishlist = async (req, res) => {
 
 exports.getAllWishlist = async (req, res) => {
   try {
-    const { page, limit, search, customer, startDate, endDate } = req.query;
+    const { page, limit, search, customer, startDate, endDate, article, salesperson, status } = req.query;
 
     // Build optional filters (customer + createdAt date range)
     const filter = {};
@@ -55,8 +56,15 @@ exports.getAllWishlist = async (req, res) => {
       }
     }
 
+    // Extra filters resolved inside the service:
+    //  - article    : partial match on the requested product's article name
+    //  - salesperson: createdBy (User) id
+    //  - status      : computed "Stock Time" status (Pending / Not Fulfilled /
+    //                  Expired / Accepted / Rejected / Timeout)
+    const extra = { article, salesperson, status };
+
     // Call service function
-    const result = await WishlistService.getWishlist(filter, page, limit, search);
+    const result = await WishlistService.getWishlist(filter, page, limit, search, extra);
 
     return res.status(200).json({
       success: true,
@@ -129,8 +137,20 @@ exports.getWishlistBySalesperson = async (req, res) => {
       }
     }
 
+    // Article filter: the article name lives on the Product, while wishlists only
+    // store productId. Resolve the matching products first, then constrain both
+    // collections to wishlists that reference one of them.
+    const { article, status } = req.query;
+    let articleProductIds = null;
+    if (article && article.trim() !== "") {
+      const arx = new RegExp(article.trim(), "i");
+      const products = await Product.find({ article: arx }).select("_id").lean();
+      articleProductIds = products.map((p) => p._id);
+    }
+
     const applyFilters = (query) => {
       if (searchOr) query.$or = searchOr;
+      if (articleProductIds) query["WishList.productId"] = { $in: articleProductIds };
     };
 
     // Active (pending) wishlists
@@ -163,7 +183,7 @@ exports.getWishlistBySalesperson = async (req, res) => {
     const activeTagged = activeDocs.map((d) => ({
       ...d,
       isHistory: false,
-      wishAction: null,
+      wishAction: computeActiveWishlistStatus(d),
       _sortDate: d.updatedAt || d.createdAt,
     }));
     const historyTagged = historyDocs.map((d) => ({
@@ -174,15 +194,24 @@ exports.getWishlistBySalesperson = async (req, res) => {
     }));
 
     // Merge newest-first, then paginate the combined list in memory.
-    const combined = [...activeTagged, ...historyTagged].sort(
+    let combined = [...activeTagged, ...historyTagged].sort(
       (a, b) => new Date(b._sortDate) - new Date(a._sortDate)
     );
+
+    // "Stock Time" status filter. Status is computed (not stored), so it is
+    // applied here after both collections are tagged and merged. Active
+    // wishlists whose stock time is set (wishAction null) count as "Pending".
+    if (status && status.trim() !== "") {
+      const wanted = status.trim();
+      combined = combined.filter((d) => (d.wishAction || "Pending") === wanted);
+    }
 
     const totalRecords = combined.length;
     const totalPages = Math.ceil(totalRecords / limit) || 1;
     const pageSlice = combined.slice(skip, skip + limit);
 
     await enrichOrdersWithProductDetails(pageSlice);
+    await WishlistService.enrichWishlistsWithAssignedQuantity(pageSlice);
     pageSlice.forEach((d) => {
       delete d._sortDate;
     });
@@ -245,9 +274,15 @@ exports.updateWishlistById = async (req, res) => {
 exports.completeWishlist = async (req, res) => {
   try {
     const { id } = req.params;
-    const { schemesId } = req.body || {};
+    const { schemesId, acceptedQuantities, partialOrderReason, partialReasonCategory, partialOrderExplanation } = req.body || {};
 
-    const { order, history } = await WishlistService.findandmarkdone(id, schemesId);
+    const { order, history } = await WishlistService.findandmarkdone(id, {
+      schemesId,
+      acceptedQuantities,
+      partialOrderReason,
+      partialReasonCategory,
+      partialOrderExplanation,
+    });
 
     return res.status(200).json({
       order,
@@ -276,7 +311,16 @@ exports.completeWishlist = async (req, res) => {
 exports.softDeleteWishlistById = async (req, res) => {
   try {
     const { id } = req.params;
-    const rejectedWishlist = await WishlistService.softDeleteWishlistById(id);
+    const { rejectionReasonCategory, rejectionOrderExplanation, rejectionReason, partialReasonCategory, partialOrderExplanation, partialOrderReason } = req.body || {};
+
+    const rejectedWishlist = await WishlistService.softDeleteWishlistById(id, {
+      rejectionReasonCategory,
+      rejectionOrderExplanation,
+      rejectionReason,
+      partialReasonCategory,
+      partialOrderExplanation,
+      partialOrderReason,
+    });
 
     return res.status(200).json({
       success: true,
@@ -292,3 +336,84 @@ exports.softDeleteWishlistById = async (req, res) => {
     });
   }
 };
+
+exports.getWishlistRating = async (req, res) => {
+  try {
+    const { startDate, endDate, search, salespersonId, customerId } = req.query;
+
+    const data = await WishlistService.getWishlistRating({
+      startDate,
+      endDate,
+      search,
+      salespersonId,
+      customerId,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Wishlist rating analytics fetched successfully",
+      data,
+    });
+  } catch (error) {
+    console.error("Wishlist Rating Error:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to fetch wishlist rating",
+    });
+  }
+};
+
+exports.getWishlistAnalytics = async (req, res) => {
+  try {
+    const { financialYear, month, startDate, endDate } = req.query;
+
+    const data = await WishlistService.getWishlistAnalytics({
+      financialYear,
+      month,
+      startDate,
+      endDate,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Wishlist analytics fetched successfully",
+      data,
+    });
+  } catch (error) {
+    console.error("Wishlist Analytics Error:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to fetch wishlist analytics",
+    });
+  }
+};
+
+exports.getWishlistMonthlyRecords = async (req, res) => {
+  try {
+    const { financialYear, month, startDate, endDate, search, status, page, limit } = req.query;
+
+    const result = await WishlistService.getWishlistMonthlyRecords({
+      financialYear,
+      month,
+      startDate,
+      endDate,
+      search,
+      status,
+      page,
+      limit,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Monthly wishlist records fetched successfully",
+      data: result.records,
+      pagination: result.pagination,
+    });
+  } catch (error) {
+    console.error("Wishlist Monthly Records Error:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to fetch monthly wishlist records",
+    });
+  }
+};

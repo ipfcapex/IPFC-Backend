@@ -42,7 +42,7 @@ const wishlistHistorySchema = new mongoose.Schema(
     // How the wishlist ended up here.
     wishAction: {
       type: String,
-      enum: ["Accepted", "Rejected", "Timeout"],
+      enum: ["Accepted", "Partial", "Rejected", "Timeout", "Not Fulfilled", "Expired"],
       required: true,
     },
     // When the action happened.
@@ -50,6 +50,70 @@ const wishlistHistorySchema = new mongoose.Schema(
     // Preserve the original document's timestamps for reporting.
     originalCreatedAt: { type: Date },
     originalUpdatedAt: { type: Date },
+
+    // --- partial order metadata ---
+    // Total quantity originally requested across all items.
+    requestedQuantity: { type: Number, default: 0 },
+    // Quantity that was accepted / ordered.
+    acceptedQuantity: { type: Number, default: 0 },
+    // Quantity remaining after partial fulfillment.
+    remainingQuantity: { type: Number, default: 0 },
+    // Whether the order placed was partial (acceptedQty < requestedQty).
+    isPartialOrder: { type: Boolean, default: false },
+    // Mandatory reason when partial. Null / absent for full orders.
+    partialReasonCategory: {
+      type: String,
+      enum: [
+        "By Sales Person mistake",
+        "Less stock assigned by Production Manager",
+        "Holiday",
+        "Weekend",
+        "Platform Server Down",
+        "Customer Requested Less Quantity",
+        "Raw Material / Stock Shortage",
+        "Logistics & Transport Constraint",
+        "Quality Inspection Rejection",
+        "Other",
+        null
+      ],
+      default: null,
+    },
+    partialOrderExplanation: {
+      type: String,
+      default: null,
+    },
+    partialOrderReason: {
+      type: String,
+      default: null,
+    },
+
+    // --- Rejection Metadata ---
+    rejectionReasonCategory: {
+      type: String,
+      enum: [
+        "By Sales Person mistake",
+        "Customer Cancelled Order",
+        "Customer Requested Different Product / Price",
+        "Customer Not Responding",
+        "Customer Store Closed / Relocated",
+        "Duplicate Wishlist Created",
+        "Other",
+        null
+      ],
+      default: null,
+    },
+    rejectionOrderExplanation: {
+      type: String,
+      default: null,
+    },
+    rejectionReason: {
+      type: String,
+      default: null,
+    },
+    // When the order was created from this wishlist (for waiting-time calc).
+    fulfillmentDate: { type: Date, default: null },
+    // Pre-computed waiting time in days (creation → fulfillment).
+    waitingTimeDays: { type: Number, default: null },
   },
   {
     timestamps: true,

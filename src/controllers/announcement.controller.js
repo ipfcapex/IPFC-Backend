@@ -11,14 +11,19 @@ exports.createAnnouncements = async (req, res) => {
 
 exports.getAllAnnouncements = async (req, res) => {
   try {
-    const { page = 1, limit = 10, isActive = true, search = "" } = req.query;
+    const page = req.query.page;
+    const limit = req.query.limit;
+    const isActive = req.query.isActive !== "false";
+    const rawSearch = typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const search = (rawSearch === "undefined" || rawSearch === "null") ? "" : rawSearch;
+
     const getProduct = await announcementService.getallannouncement(
-      Number(page),
-      Number(limit),
-      isActive === "true",
-      search.trim()
+      page,
+      limit,
+      isActive,
+      search
     );
-    res.status(201).json({ success: true, data: getProduct });
+    res.status(200).json({ success: true, data: getProduct });
   } catch (err) {
     console.error("Get All Announcements Error:", err);
     res.status(500).json({
