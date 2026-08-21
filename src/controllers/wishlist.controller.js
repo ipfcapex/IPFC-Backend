@@ -211,6 +211,7 @@ exports.getWishlistBySalesperson = async (req, res) => {
     const pageSlice = combined.slice(skip, skip + limit);
 
     await enrichOrdersWithProductDetails(pageSlice);
+    await WishlistService.enrichWishlistsWithAssignedQuantity(pageSlice);
     pageSlice.forEach((d) => {
       delete d._sortDate;
     });

@@ -1,7 +1,47 @@
-const { Customer, Product, Wishlist, Schemes, WishlistHistory, SellOrder, Cart } = require("../models");
+const { Customer, Product, Wishlist, Schemes, WishlistHistory, SellOrder, Cart, Production } = require("../models");
 const mongoose = require("mongoose");
 const { enrichOrdersWithProductDetails } = require("./salesOrder.service");
 const { sendNotification } = require("./notificationService");
+
+// Enrich active wishlists with production-assigned quantities only when stock timer is active
+const enrichWishlistsWithAssignedQuantity = async (wishlists) => {
+  if (!Array.isArray(wishlists) || !wishlists.length) return;
+  // Only enrich wishlists where the stock timer is active (wishlistStockTime is set)
+  const activeIds = wishlists
+    .filter((w) => w && !w.isHistory && w.wishlistStockTime)
+    .map((w) => w._id);
+  if (!activeIds.length) return;
+
+  const ProductionModel = Production || mongoose.models.Production;
+  const activeProds = await ProductionModel.find({
+    "assignwishlistprod.wishlistId": { $in: activeIds },
+    isActive: true,
+  })
+    .select("assignwishlistprod")
+    .lean();
+
+  const assignedMap = {};
+  for (const prod of activeProds) {
+    for (const a of prod.assignwishlistprod || []) {
+      if (a.wishlistId) {
+        const wId = a.wishlistId.toString();
+        const qty = Number(a.assignedQuantity) || 0;
+        assignedMap[wId] = (assignedMap[wId] || 0) + qty;
+      }
+    }
+  }
+
+  wishlists.forEach((w) => {
+    if (w && !w.isHistory && w.wishlistStockTime) {
+      const wId = String(w._id);
+      if (assignedMap[wId] !== undefined) {
+        w.assignedQuantity = assignedMap[wId];
+      }
+    }
+  });
+};
+
+exports.enrichWishlistsWithAssignedQuantity = enrichWishlistsWithAssignedQuantity;
 
 // Compute a virtual status for active (non-archived) wishlists based on
 // whether the requested article has been prepared (wishlistStockTime set)
@@ -329,6 +369,7 @@ exports.getWishlist = async (filter = {}, page = 1, limit = 10, search = "", ext
     .filter(Boolean);
 
   await enrichOrdersWithProductDetails(pageSlice);
+  await enrichWishlistsWithAssignedQuantity(pageSlice);
 
   return {
     wishlists: pageSlice,

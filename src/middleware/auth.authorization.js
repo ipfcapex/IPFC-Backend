@@ -21,7 +21,7 @@ const requireAdminRoles = (...roles) => {
   return (req, res, next) => {
     console.log("Checking user role:", req.user?.role);
     if (!req.user) {
-      return res.status(403).json({ message: "Access denied You have limited access" });
+      return res.status(401).json({ message: "Authentication required" });
     }
 
     const userRole = req.user.role;
